@@ -221,3 +221,23 @@ the [tags on this repository](https://github.com/kkrypt0nn/Python-Discord-Bot-Te
 ## License
 
 This project is licensed under the Apache License 2.0 - see the [LICENSE.md](LICENSE.md) file for details
+## Setup Script
+
+For macOS/Linux:
+```
+bash scripts/setup.sh
+# then in the same shell session
+source .venv/bin/activate
+```
+
+For Windows (PowerShell):
+```
+powershell -ExecutionPolicy Bypass -File scripts/setup.ps1
+# then in the same shell
+.\.venv\Scripts\activate
+```
+
+The setup script:
+- Creates `.venv`, bootstraps `pip` even if missing
+- Installs requirements
+- Generates Prisma client and pushes the SQLite schema
