@@ -11,9 +11,18 @@ else
   exit 1
 fi
 
+USE_UV=0
+if command -v uv >/dev/null 2>&1; then
+  USE_UV=1
+fi
+
 echo "[setup] Creating virtual environment at .venv (if missing)..."
 if [ ! -d .venv ]; then
-  $PY -m venv .venv
+  if [ "$USE_UV" = "1" ]; then
+    uv venv
+  else
+    $PY -m venv .venv
+  fi
 fi
 
 VENV_PY=".venv/bin/python"
@@ -22,21 +31,25 @@ if [ ! -x "$VENV_PY" ]; then
   exit 1
 fi
 
-echo "[setup] Bootstrapping pip inside venv..."
-if ! "$VENV_PY" -m pip --version >/dev/null 2>&1; then
-  # Try ensurepip, then fall back to get-pip
-  if ! "$VENV_PY" -m ensurepip --upgrade >/dev/null 2>&1; then
-    echo "[setup] ensurepip not available; downloading get-pip.py..."
-    curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
-    "$VENV_PY" /tmp/get-pip.py
+if [ "$USE_UV" = "1" ]; then
+  echo "[setup] Installing requirements with uv..."
+  uv pip install -r requirements.txt -p "$VENV_PY"
+else
+  echo "[setup] Bootstrapping pip inside venv..."
+  if ! "$VENV_PY" -m pip --version >/dev/null 2>&1; then
+    # Try ensurepip, then fall back to get-pip
+    if ! "$VENV_PY" -m ensurepip --upgrade >/dev/null 2>&1; then
+      echo "[setup] ensurepip not available; downloading get-pip.py..."
+      curl -fsSL https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+      "$VENV_PY" /tmp/get-pip.py
+    fi
   fi
+  echo "[setup] Upgrading build tooling..."
+  "$VENV_PY" -m pip install -U pip setuptools wheel
+
+  echo "[setup] Installing requirements..."
+  "$VENV_PY" -m pip install -r requirements.txt
 fi
-
-echo "[setup] Upgrading build tooling..."
-"$VENV_PY" -m pip install -U pip setuptools wheel
-
-echo "[setup] Installing requirements..."
-"$VENV_PY" -m pip install -r requirements.txt
 
 echo "[setup] Generating Prisma client and pushing schema (SQLite)..."
 "$VENV_PY" -m prisma generate || true
@@ -56,4 +69,3 @@ cat <<EOF
    python -m tui
 
 EOF
-

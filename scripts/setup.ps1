@@ -8,33 +8,41 @@ function Find-Python {
 }
 $py = Find-Python
 
+$useUv = $false
+if (Get-Command uv -ErrorAction SilentlyContinue) { $useUv = $true }
+
 Write-Host "[setup] Creating virtual environment at .venv (if missing)..."
 if (-not (Test-Path .venv)) {
-  & $py -m venv .venv
+  if ($useUv) { uv venv } else { & $py -m venv .venv }
 }
 
 $venvPy = ".\.venv\Scripts\python.exe"
 if (-not (Test-Path $venvPy)) { throw "Venv python not found at $venvPy" }
 
-Write-Host "[setup] Bootstrapping pip inside venv..."
-try {
-  & $venvPy -m pip --version | Out-Null
-} catch {
-  try {
-    & $venvPy -m ensurepip --upgrade | Out-Null
-  } catch {
-    Write-Host "[setup] ensurepip not available; downloading get-pip.py..."
-    $tmp = Join-Path $env:TEMP 'get-pip.py'
-    Invoke-WebRequest -UseBasicParsing https://bootstrap.pypa.io/get-pip.py -OutFile $tmp
-    & $venvPy $tmp
-  }
+if ($useUv) {
+  Write-Host "[setup] Installing requirements with uv..."
+  uv pip install -r requirements.txt -p $venvPy
 }
+else {
+  Write-Host "[setup] Bootstrapping pip inside venv..."
+  try {
+    & $venvPy -m pip --version | Out-Null
+  } catch {
+    try {
+      & $venvPy -m ensurepip --upgrade | Out-Null
+    } catch {
+      Write-Host "[setup] ensurepip not available; downloading get-pip.py..."
+      $tmp = Join-Path $env:TEMP 'get-pip.py'
+      Invoke-WebRequest -UseBasicParsing https://bootstrap.pypa.io/get-pip.py -OutFile $tmp
+      & $venvPy $tmp
+    }
+  }
+  Write-Host "[setup] Upgrading build tooling..."
+  & $venvPy -m pip install -U pip setuptools wheel
 
-Write-Host "[setup] Upgrading build tooling..."
-& $venvPy -m pip install -U pip setuptools wheel
-
-Write-Host "[setup] Installing requirements..."
-& $venvPy -m pip install -r requirements.txt
+  Write-Host "[setup] Installing requirements..."
+  & $venvPy -m pip install -r requirements.txt
+}
 
 Write-Host "[setup] Generating Prisma client and pushing schema (SQLite)..."
 try { & $venvPy -m prisma generate } catch {}
@@ -55,4 +63,3 @@ Write-Host "[setup] Done. Next steps:"
    python -m tui
 
 "@ | Write-Host
-
