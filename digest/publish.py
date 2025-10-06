@@ -1,0 +1,28 @@
+import asyncio
+from typing import Iterable
+
+import hikari
+
+
+async def post_text(
+    token: str,
+    channel_id: int,
+    lines: Iterable[str],
+    block_size: int = 1800,
+) -> None:
+    rest_app = hikari.RESTApp()
+    await rest_app.start()
+    try:
+        async with rest_app.acquire(token) as rest:
+            buf = ""
+            for line in lines:
+                if len(buf) + len(line) + 1 > block_size:
+                    await rest.create_message(channel_id, buf)
+                    await asyncio.sleep(0)
+                    buf = ""
+                buf += ("\n" if buf else "") + line
+            if buf:
+                await rest.create_message(channel_id, buf)
+    finally:
+        await rest_app.close()
+

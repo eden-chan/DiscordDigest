@@ -118,6 +118,76 @@ docker compose up -d --build
 
 > **Note**: `-d` will make the container run in detached mode, so in the background.
 
+## Hikari Digest (What’s Happening)
+
+An optional Hikari-based utility is included to summarize recent conversations into a digest using Gemini.
+
+- Configure env:
+  - `DIGEST_CHANNEL_ID` — channel to post the digest
+  - `DISCORD_TOKEN_TYPE` — `Bot` (default) or `Bearer`
+  - `TIME_WINDOW_HOURS` — lookback window (default 72)
+  - `GEMINI_API_KEY` — optional; enables Gemini summaries
+
+Install requirements and run a one-off preview:
+
+```
+python -m pip install -r requirements.txt
+python -m digest --list-channels   # optional helper to get channel IDs
+python -m digest --dry-run         # print digest to terminal (no posting)
+python -m digest                   # post a preview digest
+
+## TUI Tester (Textual)
+
+Run a simple Textual-based TUI to validate read access and summaries without posting. Requires a prebuilt `data/channels.json`.
+
+```
+python -m pip install -r requirements.txt
+python -m tui
+```
+
+Keys:
+- `r` refresh channel list
+- `space/enter` select channels in the left pane
+- `h` cycle lookback hours (24/48/72)
+- `d` dry-run: fetch, score, and summarize; prints results in the right pane
+- `q` quit
+
+## Export Channels to JSON
+
+Scrape available channels (via Hikari REST) and write them to a JSON file. This file is required by the TUI and CLI.
+
+```
+python -m digest.scrape --out data/channels.json
+```
+
+Notes:
+- With `DISCORD_TOKEN_TYPE=Bot` and `GUILD_ID` set, this exports all guild channels with names/types.
+- Bearer tokens may not list all channels due to permissions; prefer a Bot token or use a pre-generated `data/channels.json`.
+- Do not commit `data/channels.json` or `data/oauth_token.json`. Use `data/channels.example.json` as a template and keep real files local.
+
+### OAuth Helper (optional)
+
+If you authorize with `messages.read` and need a Bearer token, you can exchange or refresh via env-driven helpers:
+
+```
+# Set OAUTH_* in your environment (.env)
+# OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, OAUTH_REDIRECT_URI
+# Optionally OAUTH_CODE (otherwise you will be prompted)
+# or OAUTH_REFRESH_TOKEN (for refresh)
+
+python -m digest --oauth-login --out data/oauth_token.json      # spins up local server, opens browser, captures code
+# or
+python -m digest --oauth-exchange --out data/oauth_token.json   # prompts for code if not set
+# or
+python -m digest --oauth-refresh --out data/oauth_token.json
+
+# You can then set TOKEN (or OAUTH_ACCESS_TOKEN) from the output.
+```
+
+```
+
+This posts a simple digest to the configured channel using Hikari REST.
+
 ## Issues or Questions
 
 If you have any issues or questions of how to code a specific command, you can:
