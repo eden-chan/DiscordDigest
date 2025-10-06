@@ -138,10 +138,12 @@ python -m digest                   # post a preview digest
 
 ## TUI Tester (Textual)
 
-Run a simple Textual-based TUI to validate read access and summaries without posting. Requires a prebuilt `data/channels.json`.
+Run a simple Textual-based TUI to validate read access and summaries without posting. The TUI reads channels from SQLite by default.
 
 ```
 python -m pip install -r requirements.txt
+python -m prisma generate && python -m prisma db push   # one-time setup
+python -m digest --sync-channels                        # Bot token required
 python -m tui
 ```
 
@@ -152,9 +154,9 @@ Keys:
 - `d` dry-run: fetch, score, and summarize; prints results in the right pane
 - `q` quit
 
-## Export Channels to JSON
+## Export Channels to JSON (optional)
 
-Scrape available channels (via Hikari REST) and write them to a JSON file. This file is required by the TUI and CLI.
+Scrape available channels (via Hikari REST) and write them to a JSON file. You can seed the database from this if desired, but the TUI/CLI prefer SQLite.
 
 ```
 python -m digest.scrape --out data/channels.json

@@ -126,20 +126,31 @@ async def run_preview(dry_run: bool = False, hours: int | None = None) -> None:
     lookback = hours if hours is not None else cfg.time_window_hours
     since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=lookback)
 
-    # Require static channels list (no dynamic fallback)
+    # Prefer DB channels; fallback to JSON if DB empty
     channel_ids: list[int] = []
-    static_path = os.path.join("data", "channels.json")
     try:
-        if os.path.exists(static_path):
-            with open(static_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            channel_ids = _parse_static_channel_ids(data)
-    except Exception as e:
+        from .db import connect_client, list_active_channel_ids, ensure_schema
+
+        await ensure_schema()
+        client = await connect_client()
+        try:
+            channel_ids = await list_active_channel_ids(client, cfg.guild_id)
+        finally:
+            await client.disconnect()
+    except Exception:
         channel_ids = []
     if not channel_ids:
+        static_path = os.path.join("data", "channels.json")
+        try:
+            if os.path.exists(static_path):
+                with open(static_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                channel_ids = _parse_static_channel_ids(data)
+        except Exception:
+            channel_ids = []
+    if not channel_ids:
         msg = (
-            "Missing or empty data/channels.json. Generate it with `python -m digest.scrape --out data/channels.json` "
-            "(Bot token required)."
+            "No channels available. Sync with `python -m digest --sync-channels` (Bot token), or provide data/channels.json."
         )
         print(msg)
         return
@@ -183,25 +194,41 @@ async def run_preview(dry_run: bool = False, hours: int | None = None) -> None:
 
 
 async def run_list_channels(live: bool = False) -> None:
-    # List channels either from static JSON (default) or live via REST when --live is set.
+    # List channels from SQLite by default, optionally adding live REST listing.
     try:
-        static_path = os.path.join("data", "channels.json")
-        if os.path.exists(static_path):
-            with open(static_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            pairs = _parse_static_channels_with_labels(data)
-            if pairs:
-                print(f"Channels from {static_path}:")
-                for _cid, label in pairs:
-                    print(f"- {label}")
+        from .db import connect_client, list_db_channels, ensure_schema
+        await ensure_schema()
+        client = await connect_client()
+        try:
+            cfg = Config.from_env()
+            rows = await list_db_channels(client, cfg.guild_id)
+            if rows:
+                print("Channels in DB:")
+                for ch in rows:
+                    label = f"#{ch.name} — {ch.id}" if ch.name else f"Channel {ch.id}"
+                    print(f"- {label} [{ch.type}]")
                 if not live:
                     return
+        finally:
+            await client.disconnect()
     except Exception as e:
         pass
     if not live:
-        print(
-            "Missing or empty data/channels.json. Generate it with `python -m digest.scrape --out data/channels.json` (Bot token required), or pass --live with a Bot token to list via REST."
-        )
+        # Fallback to JSON if DB empty
+        try:
+            static_path = os.path.join("data", "channels.json")
+            if os.path.exists(static_path):
+                with open(static_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                pairs = _parse_static_channels_with_labels(data)
+                if pairs:
+                    print(f"Channels from {static_path}:")
+                    for _cid, label in pairs:
+                        print(f"- {label}")
+                    return
+        except Exception:
+            pass
+        print("No channels in DB or JSON. Run `python -m digest --sync-channels` (Bot token).")
         return
 
     # Live listing via REST requires a Bot token
@@ -224,6 +251,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Digest utility")
     parser.add_argument("--list-channels", action="store_true", help="List channels and exit (reads data/channels.json by default)")
     parser.add_argument("--live", action="store_true", help="With --list-channels, fetch live via REST (Bot token)")
+    parser.add_argument("--sync-channels", action="store_true", help="Upsert live channels into SQLite (Bot token)")
+    parser.add_argument("--list-db-channels", action="store_true", help="List channels stored in SQLite")
+    parser.add_argument("--guild", type=int, help="Override guild id for DB/list operations")
     parser.add_argument("--dry-run", action="store_true", help="Print digest to stdout without posting")
     parser.add_argument("--hours", type=int, help="Override lookback window in hours")
     parser.add_argument("--oauth-exchange", action="store_true", help="Exchange OAUTH_CODE for tokens using env vars")
@@ -340,6 +370,47 @@ def main() -> None:
 
     if args.list_channels:
         asyncio.run(run_list_channels(live=args.live))
+        return
+
+    if args.sync_channels:
+        # Live fetch required
+        cfg = Config.from_env()
+        if cfg.token_type.lower() != "bot":
+            print("--sync-channels requires DISCORD_TOKEN_TYPE=Bot")
+            return
+        gid = args.guild or cfg.guild_id
+        if not gid:
+            print("GUILD_ID is required for --sync-channels")
+            return
+        from .db import connect_client, upsert_guild, upsert_channels, ensure_schema
+
+        asyncio.run(ensure_schema())
+        items = asyncio.run(list_guild_channels(cfg.token, cfg.token_type, gid))
+        client = asyncio.run(connect_client())
+        try:
+            asyncio.run(upsert_guild(client, gid))
+            # Map to full tuple signature; we only have (id,name,type)
+            norm = [(cid, name, ctype, None, None, None, None, 1) for cid, name, ctype in items]
+            asyncio.run(upsert_channels(client, gid, norm))
+            print(f"Synced {len(items)} channels to SQLite.")
+        finally:
+            asyncio.run(client.disconnect())
+        return
+
+    if args.list_db_channels:
+        from .db import connect_client, list_db_channels, ensure_schema
+        asyncio.run(ensure_schema())
+        client = asyncio.run(connect_client())
+        try:
+            cfg = Config.from_env()
+            gid = args.guild or cfg.guild_id
+            rows = asyncio.run(list_db_channels(client, gid))
+            print("Channels in DB:")
+            for ch in rows:
+                print(f"- {ch.name or ch.id} [{ch.type}] — {ch.id}")
+        finally:
+            asyncio.run(client.disconnect())
+        return
     else:
         asyncio.run(run_preview(dry_run=args.dry_run, hours=args.hours))
 

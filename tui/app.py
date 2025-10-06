@@ -12,6 +12,7 @@ from textual.widgets.selection_list import Selection
 
 from digest.config import Config
 from digest.discover import list_guild_channels
+from digest.db import connect_client, list_db_channels, ensure_schema
 from digest.fetch import fetch_recent_messages
 from digest.scoring import select_top
 from digest.summarize import summarize_with_gemini, naive_extract
@@ -67,7 +68,30 @@ class DigestTUI(App):
             if not self.cfg:
                 log.write_line("Config not loaded.")
                 return
-            # 1) Static file is required (no dynamic fallback)
+            # 1) Prefer SQLite DB (source of truth)
+            try:
+                await ensure_schema()
+                client = await connect_client()
+                try:
+                    gid = self.cfg.guild_id if self.cfg else None
+                    rows = await list_db_channels(client, gid)
+                finally:
+                    await client.disconnect()
+                if rows:
+                    resolved = 0
+                    for ch in rows:
+                        label = f"#{ch.name} — {ch.id}" if ch.name else f"Channel {ch.id}"
+                        if ch.name:
+                            resolved += 1
+                        self._sel_add(sel, Selection(label, int(ch.id)))
+                    log.write_line(
+                        f"Loaded {len(rows)} channels from SQLite. Resolved names: {resolved}/{len(rows)}. Press 'd' to dry-run."
+                    )
+                    return
+            except Exception as e:
+                log.write_line(f"DB load failed: {e}")
+
+            # 2) Fallback: Static file (for bootstrap/dev)
             static_path = os.path.join("data", "channels.json")
             if os.path.exists(static_path):
                 try:
@@ -83,21 +107,11 @@ class DigestTUI(App):
                             f"Loaded {total} channels from data/channels.json. Resolved names: {resolved}/{total}. Press 'd' to dry-run."
                         )
                         return
-                    else:
-                        keys = list(data.keys()) if isinstance(data, dict) else [type(data).__name__]
-                        log.write_line(
-                            f"No channels parsed from static JSON (data/channels.json). Top-level keys: {keys}."
-                        )
-                        log.write_line(
-                            "Provide data/channels.json (run `python -m digest.scrape --out data/channels.json` with a Bot token), then press 'r'."
-                        )
-                        return
                 except Exception as e:
                     log.write_line(f"Failed to load data/channels.json: {e}")
-            # 2) No dynamic fallback: require static file
-            log.write_line(
-                "data/channels.json not found. Create it with `python -m digest.scrape --out data/channels.json` (Bot token required)."
-            )
+
+            # 3) Guidance
+            log.write_line("No channels found. Run `python -m digest --sync-channels` (Bot token), then press 'r'.")
             return
         except Exception as e:
             log.write_line(f"Error loading channels: {e}")

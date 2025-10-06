@@ -21,4 +21,3 @@ async def list_guild_channels(
             return out
     finally:
         await rest_app.close()
-

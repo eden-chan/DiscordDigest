@@ -1,0 +1,54 @@
+generator client {
+  provider = "prisma-client-py"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = "file:data/digest.db"
+}
+
+enum ChannelType {
+  GUILD_TEXT
+  GUILD_VOICE
+  GUILD_CATEGORY
+  GUILD_NEWS
+  GUILD_FORUM
+  GUILD_STAGE_VOICE
+  GUILD_PUBLIC_THREAD
+  GUILD_PRIVATE_THREAD
+  DM
+  GROUP_DM
+}
+
+model Guild {
+  id        BigInt   @id
+  name      String?
+  icon      String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  channels  Channel[]
+}
+
+model Channel {
+  id               BigInt      @id
+  guildId          BigInt
+  name             String?
+  type             ChannelType
+  parentId         BigInt?
+  topic            String?
+  position         Int?
+  nsfw             Boolean?    @default(false)
+  rateLimitPerUser Int?
+  isActive         Boolean     @default(true)
+  lastSyncedAt     DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  guild    Guild    @relation(fields: [guildId], references: [id])
+  parent   Channel? @relation("ChannelParent", fields: [parentId], references: [id])
+  children Channel[] @relation("ChannelParent")
+
+  @@index([guildId, type])
+  @@index([parentId])
+}
+
