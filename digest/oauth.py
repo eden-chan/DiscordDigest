@@ -8,6 +8,7 @@ from aiohttp import web
 import urllib.parse as _up
 import webbrowser
 import asyncio
+from datetime import datetime, timezone, timedelta
 
 
 TOKEN_URL = "https://discord.com/api/oauth2/token"
@@ -232,6 +233,31 @@ def main() -> None:
         print(f"Wrote {args.out}")
     else:
         _print(result)
+
+    # Also store in SQLite for centralized management
+    try:
+        from .db import upsert_oauth_token_sync
+
+        token_type = str(result.get("token_type", "Bearer"))
+        access = str(result.get("access_token")) if result.get("access_token") else None
+        refresh = result.get("refresh_token")
+        scope = result.get("scope")
+        expires_in = result.get("expires_in")
+        expires_at = None
+        if isinstance(expires_in, (int, float)):
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=int(expires_in))
+        if access:
+            upsert_oauth_token_sync(
+                provider="discord",
+                token_type=token_type,
+                access_token=access,
+                refresh_token=refresh,
+                scope=scope,
+                expires_at=expires_at,
+            )
+            print("Stored OAuth token in SQLite (provider=discord).")
+    except Exception as e:
+        print(f"Warning: failed to store OAuth token in SQLite: {e}")
 
 
 if __name__ == "__main__":

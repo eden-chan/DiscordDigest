@@ -7,6 +7,11 @@ datasource db {
   url      = "file:data/digest.db"
 }
 
+enum TokenType {
+  Bot
+  Bearer
+}
+
 enum ChannelType {
   GUILD_TEXT
   GUILD_VOICE
@@ -52,3 +57,16 @@ model Channel {
   @@index([parentId])
 }
 
+model OAuthToken {
+  id           Int       @id @default(autoincrement())
+  provider     String    // 'discord'
+  tokenType    TokenType
+  accessToken  String
+  refreshToken String?
+  scope        String?
+  expiresAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@unique([provider, tokenType])
+}

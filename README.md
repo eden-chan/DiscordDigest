@@ -194,6 +194,9 @@ python -m digest --oauth-exchange --out data/oauth_token.json   # prompts for co
 python -m digest --oauth-refresh --out data/oauth_token.json
 
 # You can then set TOKEN (or OAUTH_ACCESS_TOKEN) from the output.
+# Tokens are also saved to SQLite automatically for centralized storage.
+# Probe the current token and scope:
+python -m digest --oauth-probe
 ```
 
 ```

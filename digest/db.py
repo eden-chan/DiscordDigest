@@ -131,3 +131,66 @@ async def list_active_channel_ids(client, guild_id: int | None = None) -> list[i
 async def ensure_schema():
     await _maybe_generate_client()
     await _maybe_push_db()
+
+
+# OAuth token storage
+async def upsert_oauth_token(
+    client,
+    *,
+    provider: str = "discord",
+    token_type: str = "Bearer",
+    access_token: str,
+    refresh_token: str | None = None,
+    scope: str | None = None,
+    expires_at: datetime | None = None,
+):
+    # Prisma enum casing
+    tt = "Bearer" if str(token_type).lower() == "bearer" else "Bot"
+    await client.oauthtoken.upsert(
+        where={"provider_tokenType": {"provider": provider, "tokenType": tt}},
+        data={
+            "create": {
+                "provider": provider,
+                "tokenType": tt,
+                "accessToken": access_token,
+                "refreshToken": refresh_token,
+                "scope": scope,
+                "expiresAt": expires_at,
+            },
+            "update": {
+                "accessToken": access_token,
+                "refreshToken": refresh_token,
+                "scope": scope,
+                "expiresAt": expires_at,
+            },
+        },
+    )
+
+
+async def get_oauth_token(client, *, provider: str = "discord", token_type: str = "Bearer"):
+    tt = "Bearer" if str(token_type).lower() == "bearer" else "Bot"
+    return await client.oauthtoken.find_unique(where={"provider_tokenType": {"provider": provider, "tokenType": tt}})
+
+
+def upsert_oauth_token_sync(**kwargs) -> None:
+    async def _run():
+        await ensure_schema()
+        client = await connect_client()
+        try:
+            await upsert_oauth_token(client, **kwargs)
+        finally:
+            await client.disconnect()
+
+    asyncio.run(_run())
+
+
+def get_oauth_token_sync(provider: str = "discord", token_type: str = "Bearer"):
+    async def _run():
+        await ensure_schema()
+        client = await connect_client()
+        try:
+            return await get_oauth_token(client, provider=provider, token_type=token_type)
+        finally:
+            await client.disconnect()
+
+    return asyncio.run(_run())

@@ -57,6 +57,18 @@ class Config:
             except Exception:
                 pass
         if not token:
+            # Final fallback: read from SQLite OAuth token store
+            try:
+                from .db import get_oauth_token_sync
+                rec = get_oauth_token_sync(provider="discord", token_type="Bearer")
+                if rec is not None:
+                    token = getattr(rec, "accessToken", None)
+                    tt = getattr(rec, "tokenType", None)
+                    if tt:
+                        token_type_val = str(tt)
+            except Exception:
+                pass
+        if not token:
             raise RuntimeError("Missing TOKEN/DISCORD_TOKEN/OAUTH token in env or cache")
 
         digest_channel = os.getenv("DIGEST_CHANNEL_ID")
