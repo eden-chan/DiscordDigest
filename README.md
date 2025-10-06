@@ -154,6 +154,16 @@ Keys:
 - `d` dry-run: fetch, score, and summarize; prints results in the right pane
 - `q` quit
 
+Exporting selections
+- Press `e` to export selected channels:
+  - Upserts the selection into SQLite for the configured `GUILD_ID`.
+  - Also writes a helper file at `data/selected_channels.json`.
+
+Seed DB from JSON
+```
+python -m digest --seed-channels-from-json --json-path data/channels.json   # uses guild_id from JSON or --guild
+```
+
 ## Export Channels to JSON (optional)
 
 Scrape available channels (via Hikari REST) and write them to a JSON file. You can seed the database from this if desired, but the TUI/CLI prefer SQLite.

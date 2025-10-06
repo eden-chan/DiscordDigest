@@ -254,6 +254,8 @@ def main() -> None:
     parser.add_argument("--sync-channels", action="store_true", help="Upsert live channels into SQLite (Bot token)")
     parser.add_argument("--list-db-channels", action="store_true", help="List channels stored in SQLite")
     parser.add_argument("--guild", type=int, help="Override guild id for DB/list operations")
+    parser.add_argument("--seed-channels-from-json", action="store_true", help="Upsert channels from a JSON file into SQLite")
+    parser.add_argument("--json-path", default=os.path.join("data", "channels.json"), help="Path to channels JSON for --seed-channels-from-json")
     parser.add_argument("--dry-run", action="store_true", help="Print digest to stdout without posting")
     parser.add_argument("--hours", type=int, help="Override lookback window in hours")
     parser.add_argument("--oauth-exchange", action="store_true", help="Exchange OAUTH_CODE for tokens using env vars")
@@ -408,6 +410,53 @@ def main() -> None:
             print("Channels in DB:")
             for ch in rows:
                 print(f"- {ch.name or ch.id} [{ch.type}] — {ch.id}")
+        finally:
+            asyncio.run(client.disconnect())
+        return
+
+    if args.seed_channels_from_json:
+        from .db import connect_client, upsert_guild, upsert_channels, ensure_schema
+
+        # Load JSON
+        try:
+            with open(args.json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            print(f"Failed to load {args.json_path}: {e}")
+            return
+
+        # Determine guild id
+        gid = None
+        if isinstance(data, dict):
+            gid = data.get("guild_id")
+            if not gid and isinstance(data.get("guild"), dict):
+                try:
+                    gid = int(data["guild"].get("id"))
+                except Exception:
+                    gid = None
+        if not gid:
+            cfg = Config.from_env()
+            gid = args.guild or cfg.guild_id
+        if not gid:
+            print("A guild id is required (provide in JSON as guild_id or via --guild).")
+            return
+
+        # Build upsert tuples
+        pairs = _parse_static_channels_with_labels(data)
+        if not pairs:
+            ids = _parse_static_channel_ids(data)
+            pairs = [(cid, None) for cid in ids]
+        if not pairs:
+            print("No channels found in JSON.")
+            return
+        items = [(cid, (label.split(" — ")[0].lstrip("#") if label else None), None, None, None, None, None, 1) for cid, label in pairs]
+
+        asyncio.run(ensure_schema())
+        client = asyncio.run(connect_client())
+        try:
+            asyncio.run(upsert_guild(client, int(gid)))
+            asyncio.run(upsert_channels(client, int(gid), items))
+            print(f"Seeded {len(items)} channels into SQLite from {args.json_path}.")
         finally:
             asyncio.run(client.disconnect())
         return

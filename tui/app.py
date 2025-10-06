@@ -191,22 +191,46 @@ class DigestTUI(App):
             log.write_line("Config not loaded.")
             return
 
+        # Resolve labels for nicer JSON and DB names
         labels = await self._resolve_channel_labels(selected)
-        data = {
-            "guild_id": self.cfg.guild_id,
-            "exported": len(labels),
-            "channels": [
-                {"id": cid, "label": label} for cid, label in labels
-            ],
-        }
+
+        # 1) Persist to SQLite (source of truth)
+        try:
+            if not self.cfg.guild_id:
+                raise RuntimeError("GUILD_ID not set")
+            await ensure_schema()
+            client = await connect_client()
+            try:
+                from digest.db import upsert_guild, upsert_channels
+
+                await upsert_guild(client, int(self.cfg.guild_id))
+                items = [
+                    (int(cid), (label[1:].split(" — ")[0] if label.startswith("#") else None), None, None, None, None, None, 1)
+                    for cid, label in labels
+                ]
+                await upsert_channels(client, int(self.cfg.guild_id), items)
+                log.write_line(f"Upserted {len(items)} channels into SQLite.")
+            finally:
+                await client.disconnect()
+        except Exception as e:
+            log.write_line(f"DB upsert failed: {e}")
+
+        # 2) Also write a local JSON for convenience
         try:
             os.makedirs("data", exist_ok=True)
+            data = {
+                "guild_id": self.cfg.guild_id,
+                "exported": len(labels),
+                "channels": [
+                    {"id": cid, "label": label} for cid, label in labels
+                ],
+            }
             with open("data/selected_channels.json", "w", encoding="utf-8") as f:
                 import json
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            log.write_line("Exported to data/selected_channels.json")
+            log.write_line("Exported selection to data/selected_channels.json")
         except Exception as e:
-            log.write_line(f"Export failed: {e}")
+            log.write_line(f"JSON export failed: {e}")
 
     async def _resolve_channel_labels(self, ids: list[int]) -> list[tuple[int, str]]:
         # Import here to avoid top-level dependency during docs or tooling.
