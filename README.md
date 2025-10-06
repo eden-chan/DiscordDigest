@@ -245,6 +245,32 @@ The setup script:
 - Installs requirements (via `uv pip` when present, else `pip`)
 - Generates Prisma client and pushes the SQLite schema
 
+## Make Targets
+
+Common workflows (
+requires a POSIX shell):
+
+```
+# One-time setup (creates .venv, installs deps, prisma generate/db push)
+make setup && source .venv/bin/activate
+
+# Sync channels to SQLite (Bot token required)
+TOKEN=YOUR_BOT_TOKEN GUILD_ID=1384033183112237208 make sync
+
+# List channels
+make list-db
+TOKEN=YOUR_BOT_TOKEN GUILD_ID=1384033183112237208 make list-live
+
+# Run TUI / Dry run
+make tui
+make dry-run HOURS=168
+
+# OAuth
+CODE=AUTH_CODE make oauth-exchange
+make oauth-refresh
+make oauth-probe
+```
+
 Tip: Install `uv` for faster setup
 - macOS/Linux: `pipx install uv` (or `python -m pip install uv`)
 - Windows: `pipx install uv` (requires pipx)

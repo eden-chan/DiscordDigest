@@ -9,32 +9,40 @@ def _ensure_data_dir() -> None:
 
 
 async def _maybe_generate_client() -> None:
-    """Attempt to generate Prisma client if it doesn't exist."""
+    """Attempt to generate Prisma client if it doesn't exist or isn't generated."""
+    need_generate = False
     try:
-        from prisma import Prisma  # noqa: F401
-        return
+        from prisma import Prisma  # triggers getattr on missing client
+        _ = Prisma
+    except RuntimeError:
+        # Client module present but not generated
+        need_generate = True
     except Exception:
-        pass
+        # prisma not installed or other import error
+        need_generate = True
+
+    if not need_generate:
+        return
     # Try to run `python -m prisma generate`
     try:
         import subprocess, sys
-
-        subprocess.run([sys.executable, "-m", "prisma", "generate"], check=False)
-    except Exception:
-        return
+        print("[prisma] Generating client...")
+        subprocess.run([sys.executable, "-m", "prisma", "generate"], check=True)
+    except Exception as e:
+        print(f"[prisma] generate failed or prisma not installed: {e}")
 
 
 async def _maybe_push_db() -> None:
     try:
         import subprocess, sys
-
-        subprocess.run([sys.executable, "-m", "prisma", "db", "push"], check=False)
-    except Exception:
-        return
+        print("[prisma] Pushing schema (db push)...")
+        subprocess.run([sys.executable, "-m", "prisma", "db", "push"], check=True)
+    except Exception as e:
+        print(f"[prisma] db push failed: {e}")
 
 
 async def connect_client():
-    await _maybe_generate_client()
+    await ensure_schema()
     from prisma import Prisma
 
     client = Prisma()

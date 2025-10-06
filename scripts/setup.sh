@@ -69,3 +69,10 @@ cat <<EOF
    python -m tui
 
 EOF
+
+# If this script is being sourced, activate venv automatically
+if [ -n "${BASH_SOURCE:-}" ] && [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  . .venv/bin/activate || true
+elif [ -n "${ZSH_EVAL_CONTEXT:-}" ] && [[ "$ZSH_EVAL_CONTEXT" == *":file"* ]]; then
+  . .venv/bin/activate || true
+fi
