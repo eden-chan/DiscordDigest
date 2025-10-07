@@ -1,28 +1,10 @@
 generator client {
-  provider = "prisma-client-py"
+  provider = env("PRISMA_PY_GENERATOR")
 }
 
 datasource db {
   provider = "sqlite"
   url      = "file:data/digest.db"
-}
-
-enum TokenType {
-  Bot
-  Bearer
-}
-
-enum ChannelType {
-  GUILD_TEXT
-  GUILD_VOICE
-  GUILD_CATEGORY
-  GUILD_NEWS
-  GUILD_FORUM
-  GUILD_STAGE_VOICE
-  GUILD_PUBLIC_THREAD
-  GUILD_PRIVATE_THREAD
-  DM
-  GROUP_DM
 }
 
 model Guild {
@@ -32,13 +14,14 @@ model Guild {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   channels  Channel[]
+  messages  Message[]
 }
 
 model Channel {
   id               BigInt      @id
   guildId          BigInt
   name             String?
-  type             ChannelType
+  type             String
   parentId         BigInt?
   topic            String?
   position         Int?
@@ -52,6 +35,8 @@ model Channel {
   guild    Guild    @relation(fields: [guildId], references: [id])
   parent   Channel? @relation("ChannelParent", fields: [parentId], references: [id])
   children Channel[] @relation("ChannelParent")
+  state    ChannelState?
+  messages Message[]
 
   @@index([guildId, type])
   @@index([parentId])
@@ -60,7 +45,7 @@ model Channel {
 model OAuthToken {
   id           Int       @id @default(autoincrement())
   provider     String
-  tokenType    TokenType
+  tokenType    String
   accessToken  String
   refreshToken String?
   scope        String?
@@ -71,3 +56,77 @@ model OAuthToken {
   @@unique([provider, tokenType])
 }
 
+model User {
+  id         BigInt   @id
+  username   String?
+  globalName String?
+  discriminator String?
+  avatar     String?
+  bot        Boolean? @default(false)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  messages   Message[]
+  mentions   MessageMention[]
+}
+
+model Message {
+  id               BigInt   @id
+  channelId        BigInt
+  guildId          BigInt?
+  authorId         BigInt
+  content          String?
+  createdAt        DateTime
+  editedAt         DateTime?
+  link             String?
+  reactionsTotal   Int?
+  attachmentsCount Int?
+  createdAtDb      DateTime @default(now())
+  updatedAtDb      DateTime @updatedAt
+
+  channel Channel @relation(fields: [channelId], references: [id])
+  guild   Guild?  @relation(fields: [guildId], references: [id])
+  author  User    @relation(fields: [authorId], references: [id])
+  attachments MessageAttachment[]
+  reactions   MessageReaction[]
+  mentions    MessageMention[]
+
+  @@index([channelId, createdAt])
+  @@index([authorId])
+}
+
+model MessageAttachment {
+  id         BigInt  @id
+  messageId  BigInt
+  url        String
+  filename   String?
+  contentType String?
+  size       Int?
+  message    Message @relation(fields: [messageId], references: [id])
+  @@index([messageId])
+}
+
+model MessageReaction {
+  id        Int     @id @default(autoincrement())
+  messageId BigInt
+  emojiId   BigInt?
+  emojiName String?
+  count     Int?
+  message   Message @relation(fields: [messageId], references: [id])
+  @@index([messageId])
+}
+
+model MessageMention {
+  messageId BigInt
+  userId    BigInt
+  message   Message @relation(fields: [messageId], references: [id])
+  user      User    @relation(fields: [userId], references: [id])
+  @@id([messageId, userId])
+}
+
+model ChannelState {
+  channelId              BigInt  @id
+  lastMessageId          BigInt?
+  lastMessageCreatedAt   DateTime?
+  lastIndexedAt          DateTime?
+  channel                Channel @relation(fields: [channelId], references: [id])
+}

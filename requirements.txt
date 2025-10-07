@@ -6,3 +6,4 @@ hikari
 google-generativeai
 textual
 prisma
+httpx

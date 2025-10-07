@@ -9,11 +9,13 @@ async def post_text(
     channel_id: int,
     lines: Iterable[str],
     block_size: int = 1800,
+    *,
+    token_type: str = "Bot",
 ) -> None:
     rest_app = hikari.RESTApp()
     await rest_app.start()
     try:
-        async with rest_app.acquire(token) as rest:
+        async with rest_app.acquire(token, token_type=token_type) as rest:
             buf = ""
             for line in lines:
                 if len(buf) + len(line) + 1 > block_size:
@@ -25,4 +27,3 @@ async def post_text(
                 await rest.create_message(channel_id, buf)
     finally:
         await rest_app.close()
-

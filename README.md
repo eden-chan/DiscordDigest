@@ -269,6 +269,10 @@ make dry-run HOURS=168
 CODE=AUTH_CODE make oauth-exchange
 make oauth-refresh
 make oauth-probe
+
+# DB tools
+make studio     # opens Prisma Studio in your browser (requires Node + npx)
+make db-shell   # opens SQLite shell for data/digest.db
 ```
 
 Tip: Install `uv` for faster setup

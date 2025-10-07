@@ -1,7 +1,7 @@
 import asyncio
 import datetime as dt
 from dataclasses import dataclass
-from typing import Iterable, List, Sequence
+from typing import Iterable, List, Sequence, Optional
 
 import hikari
 import os
@@ -15,8 +15,12 @@ class SimpleMessage:
     created_at: dt.datetime
     content: str
     link: str
+    author_username: Optional[str] = None
+    author_is_bot: Optional[bool] = None
     reactions_total: int = 0
     attachments: int = 0
+    attachments_info: Optional[List[dict]] = None
+    reactions_info: Optional[List[dict]] = None
 
 
 async def fetch_recent_messages(
@@ -68,21 +72,60 @@ async def fetch_recent_messages(
                                 pass
 
                             attachments = 0
+                            attachments_info: List[dict] = []
                             try:
-                                attachments = len(m.attachments) if m.attachments else 0
+                                if m.attachments:
+                                    attachments = len(m.attachments)
+                                    for att in m.attachments:
+                                        try:
+                                            attachments_info.append(
+                                                {
+                                                    "id": int(getattr(att, "id", 0)) if getattr(att, "id", None) else None,
+                                                    "url": str(getattr(att, "url", "")),
+                                                    "filename": getattr(att, "filename", None),
+                                                    "content_type": getattr(att, "media_type", None) or getattr(att, "content_type", None),
+                                                    "size": int(getattr(att, "size", 0)) if getattr(att, "size", None) else None,
+                                                }
+                                            )
+                                        except Exception:
+                                            continue
                             except Exception:
                                 attachments = 0
+
+                            reactions_info: List[dict] = []
+                            try:
+                                if m.reactions:
+                                    for r in m.reactions:
+                                        try:
+                                            emoji = getattr(r, "emoji", None)
+                                            emoji_id = int(getattr(emoji, "id", 0)) if emoji and getattr(emoji, "id", None) else None
+                                            emoji_name = getattr(emoji, "name", None)
+                                            reactions_info.append(
+                                                {
+                                                    "emoji_id": emoji_id,
+                                                    "emoji_name": emoji_name,
+                                                    "count": int(getattr(r, "count", 0)),
+                                                }
+                                            )
+                                        except Exception:
+                                            continue
+                            except Exception:
+                                pass
 
                             out.append(
                                 SimpleMessage(
                                     id=int(m.id),
                                     channel_id=int(m.channel_id),
                                     author_id=int(m.author.id) if m.author else 0,
+                                    author_username=str(getattr(m.author, "username", None)) if m.author else None,
+                                    author_is_bot=bool(getattr(m.author, "is_bot", False)) if m.author else None,
                                     created_at=ts,
                                     content=content,
                                     link=msg_link,
                                     reactions_total=total_reacts,
                                     attachments=attachments,
+                                    attachments_info=attachments_info or None,
+                                    reactions_info=reactions_info or None,
                                 )
                             )
                     except Exception as e:

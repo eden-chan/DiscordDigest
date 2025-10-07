@@ -21,6 +21,34 @@ Gotchas & Decisions
 - Sizing: We keep outputs under ~1800 chars per message and split messages (digest/publish.py:6).
 - Security: The digest scans all guild channels accessible to the token. Prefer Bot tokens for full coverage.
 
+Prisma + SQLite Findings (Important)
+------------------------------------
+- Prisma CLI expects schema at `prisma/schema.prisma`. Added this path to avoid schema location errors.
+- SQLite connector does not support enums. Replaced TokenType/ChannelType enums with `String` fields.
+- Prisma Python generator must be discoverable. We set `PRISMA_PY_GENERATOR` to `.venv/bin/prisma-client-py` for `prisma generate`/`db push` (Makefile, setup.sh, runtime ensure_schema()).
+- Runtime bootstrap (digest/db.py): ensure_schema runs `prisma generate` and `db push` with the venv PATH; prevents “Client hasn’t been generated yet”.
+- Event loop: wrap each DB op in its own `asyncio.run()` wrapper or a single async function; avoids “Event loop is closed”.
+
+Indexer (Messages)
+------------------
+- Added models: `User`, `Message`, `MessageAttachment`, `MessageReaction`, `MessageMention`, `ChannelState` in Prisma schema.
+- Incremental per-channel indexing: `ChannelState` tracks `lastMessageCreatedAt` and `lastIndexedAt`. Each run fetches messages since the per-channel timestamp.
+- Hikari fetch: Use `rest.fetch_messages(channel).limit(n)` (LazyIterator) and filter by timestamp client-side. For full backfill, page via `before`.
+- Attachments: Capture id/url/filename/content_type/size; indexing replaces existing attachments for the message.
+- Reactions: Aggregate per emoji (emoji_id/name + count); indexing replaces existing reactions for the message.
+- Users: Upsert author before message upsert (id, username, bot flag).
+- Mentions: Not yet wired; candidates: parse `<@id>` or read mentions directly if exposed.
+
+Permissions & channel types
+---------------------------
+- Some channels return 403 (Missing Access) if the bot lacks `View Channel`/`Read Message History` or the channel is not textable.
+- We now filter to textable types: `GUILD_TEXT`, `GUILD_NEWS`. Forum/threads will be indexed in a follow-up.
+- Backfill skips channels with fetch errors and logs `[skip] channel <id>: fetch failed (ForbiddenError)`.
+
+Studio / Ports
+--------------
+- Prisma Studio via `npx prisma studio`. Conflict on 5555 resolved by `make kill-5555` or `PORT=5556 make studio`.
+
 Open Tasks
 ----------
 - Add thread crawling (active + archived public threads) and include their messages.

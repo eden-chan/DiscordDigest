@@ -256,6 +256,21 @@ def main() -> None:
     parser.add_argument("--guild", type=int, help="Override guild id for DB/list operations")
     parser.add_argument("--seed-channels-from-json", action="store_true", help="Upsert channels from a JSON file into SQLite")
     parser.add_argument("--json-path", default=os.path.join("data", "channels.json"), help="Path to channels JSON for --seed-channels-from-json")
+    parser.add_argument("--index-messages", action="store_true", help="Index recent messages from active channels into SQLite")
+    parser.add_argument("--channels", help="Comma-separated channel IDs for indexing (optional)")
+    parser.add_argument("--verbose", action="store_true", help="Verbose output for indexing/reporting")
+    parser.add_argument("--report", action="store_true", help="Print a quick report from SQLite for the time window")
+    parser.add_argument("--full", action="store_true", help="Full backfill mode (requires --channels)")
+    parser.add_argument("--max", type=int, help="Max messages per channel in full mode")
+    parser.add_argument("--since", help="ISO timestamp cutoff for full mode (e.g., 2024-01-01T00:00:00Z)")
+    parser.add_argument("--post-weekly", action="store_true", help="Post a compact weekly summary to the configured digest channel")
+    parser.add_argument("--skip-report", action="store_true", help="List channels marked inactive (e.g., due to 403)")
+    parser.add_argument("--sync-threads", action="store_true", help="Discover and upsert thread channels for the guild")
+    parser.add_argument("--list-threads", action="store_true", help="List discovered thread channels from SQLite")
+    parser.add_argument("--threads-report", action="store_true", help="Print a threads-only report")
+    parser.add_argument("--post-test", action="store_true", help="Post a test message to the digest channel")
+    parser.add_argument("--text", help="Text for --post-test")
+    parser.add_argument("--post-summary-channel", action="store_true", help="Post a summary of a single channel to the digest channel")
     parser.add_argument("--dry-run", action="store_true", help="Print digest to stdout without posting")
     parser.add_argument("--hours", type=int, help="Override lookback window in hours")
     parser.add_argument("--oauth-exchange", action="store_true", help="Exchange OAUTH_CODE for tokens using env vars")
@@ -386,32 +401,38 @@ def main() -> None:
             return
         from .db import connect_client, upsert_guild, upsert_channels, ensure_schema
 
-        asyncio.run(ensure_schema())
-        items = asyncio.run(list_guild_channels(cfg.token, cfg.token_type, gid))
-        client = asyncio.run(connect_client())
-        try:
-            asyncio.run(upsert_guild(client, gid))
-            # Map to full tuple signature; we only have (id,name,type)
-            norm = [(cid, name, ctype, None, None, None, None, 1) for cid, name, ctype in items]
-            asyncio.run(upsert_channels(client, gid, norm))
-            print(f"Synced {len(items)} channels to SQLite.")
-        finally:
-            asyncio.run(client.disconnect())
+        async def _do_sync() -> None:
+            await ensure_schema()
+            items = await list_guild_channels(cfg.token, cfg.token_type, gid)
+            client = await connect_client()
+            try:
+                await upsert_guild(client, gid)
+                norm = [(cid, name, ctype, None, None, None, None, 1) for cid, name, ctype in items]
+                await upsert_channels(client, gid, norm)
+                print(f"Synced {len(items)} channels to SQLite.")
+            finally:
+                await client.disconnect()
+
+        asyncio.run(_do_sync())
         return
 
     if args.list_db_channels:
         from .db import connect_client, list_db_channels, ensure_schema
-        asyncio.run(ensure_schema())
-        client = asyncio.run(connect_client())
-        try:
-            cfg = Config.from_env()
-            gid = args.guild or cfg.guild_id
-            rows = asyncio.run(list_db_channels(client, gid))
-            print("Channels in DB:")
-            for ch in rows:
-                print(f"- {ch.name or ch.id} [{ch.type}] — {ch.id}")
-        finally:
-            asyncio.run(client.disconnect())
+
+        async def _do_list() -> None:
+            await ensure_schema()
+            client = await connect_client()
+            try:
+                cfg = Config.from_env()
+                gid = args.guild or cfg.guild_id
+                rows = await list_db_channels(client, gid)
+                print("Channels in DB:")
+                for ch in rows:
+                    print(f"- {ch.name or ch.id} [{ch.type}] — {ch.id}")
+            finally:
+                await client.disconnect()
+
+        asyncio.run(_do_list())
         return
 
     if args.seed_channels_from_json:
@@ -459,6 +480,149 @@ def main() -> None:
             print(f"Seeded {len(items)} channels into SQLite from {args.json_path}.")
         finally:
             asyncio.run(client.disconnect())
+        return
+
+    if args.index_messages:
+        async def _do_index() -> None:
+            from .indexer import index_messages
+            chans = None
+            if args.channels:
+                try:
+                    chans = [int(x.strip()) for x in args.channels.split(",") if x.strip()]
+                except Exception:
+                    chans = None
+            # Parse since cutoff if provided
+            since_dt = None
+            if args.since:
+                try:
+                    import datetime as _dt
+                    s = args.since.replace("Z", "+00:00")
+                    since_dt = _dt.datetime.fromisoformat(s)
+                except Exception:
+                    since_dt = None
+            per = await index_messages(
+                hours=args.hours,
+                channel_ids=chans,
+                verbose=args.verbose,
+                full=args.full,
+                max_total=args.max,
+                since_dt=since_dt,
+            )
+            total = sum(per.values())
+            if args.verbose:
+                print("[index] Per-channel counts:")
+                for cid, cnt in per.items():
+                    print(f"- {cid}: {cnt}")
+            print(f"Indexed {total} messages into SQLite.")
+        asyncio.run(_do_index())
+        return
+
+    if args.report:
+        async def _do_report() -> None:
+            from .report import print_report
+            await print_report(hours=args.hours or 72, verbose=args.verbose)
+        asyncio.run(_do_report())
+        return
+
+    if args.post_weekly:
+        async def _do_post() -> None:
+            from .report import post_compact_summary
+            hours = args.hours or 168
+            await post_compact_summary(hours=hours)
+        asyncio.run(_do_post())
+        return
+
+    if args.skip_report:
+        async def _do_skips() -> None:
+            from .db import ensure_schema, connect_client, list_inactive_channels
+            await ensure_schema()
+            client = await connect_client()
+            try:
+                cfg = Config.from_env()
+                rows = await list_inactive_channels(client, cfg.guild_id)
+                if not rows:
+                    print("No inactive channels.")
+                    return
+                print("Inactive (skipped) channels:")
+                for ch in rows:
+                    nm = ch.name or str(ch.id)
+                    print(f"- {nm} [{ch.type}] — {ch.id}")
+            finally:
+                await client.disconnect()
+        asyncio.run(_do_skips())
+        return
+
+    if args.sync_threads:
+        async def _do_sync_threads() -> None:
+            from .threads import sync_threads
+            chans = None
+            if args.channels:
+                try:
+                    chans = [int(x.strip()) for x in args.channels.split(",") if x.strip()]
+                except Exception:
+                    chans = None
+            cfg = Config.from_env()
+            cnt = await sync_threads(cfg.token, cfg.token_type, cfg.guild_id or 0, parents=chans, verbose=args.verbose)
+            print(f"Upserted {cnt} thread channels.")
+        asyncio.run(_do_sync_threads())
+        return
+
+    if args.list_threads:
+        async def _do_list_threads() -> None:
+            from .db import ensure_schema, connect_client
+            await ensure_schema()
+            client = await connect_client()
+            try:
+                cfg = Config.from_env()
+                filters = []
+                if cfg.guild_id:
+                    filters.append({"guildId": int(cfg.guild_id)})
+                where = {"OR": [
+                    {"type": {"contains": "THREAD"}},
+                    {"type": {"in": ["10", "11", "12"]}},
+                ]}
+                if filters:
+                    where = {"AND": [where] + filters}
+                rows = await client.channel.find_many(where=where, order={"name": "asc"})
+                if not rows:
+                    print("No thread channels found in DB.")
+                    return
+                print(f"Threads in DB: {len(rows)}")
+                for ch in rows:
+                    nm = ch.name or str(ch.id)
+                    print(f"- #{nm} ({ch.type}) — {ch.id} parent={ch.parentId}")
+            finally:
+                await client.disconnect()
+        asyncio.run(_do_list_threads())
+        return
+
+    if args.threads_report:
+        async def _do_thr_report() -> None:
+            from .report import print_threads_report
+            await print_threads_report(hours=args.hours or 72, verbose=args.verbose)
+        asyncio.run(_do_thr_report())
+        return
+
+    if args.post_test:
+        async def _do_test() -> None:
+            from .report import post_test_message
+            await post_test_message(text=args.text)
+        asyncio.run(_do_test())
+        return
+
+    if args.post_summary_channel:
+        async def _do_post_ch() -> None:
+            from .report import post_channel_summary
+            if not args.channels:
+                print("--post-summary-channel requires --channels <channel_id>")
+                return
+            try:
+                cid = int(args.channels.split(",")[0].strip())
+            except Exception:
+                print("Invalid --channels value")
+                return
+            await post_channel_summary(channel_id=cid, hours=args.hours or 72)
+        asyncio.run(_do_post_ch())
         return
     else:
         asyncio.run(run_preview(dry_run=args.dry_run, hours=args.hours))

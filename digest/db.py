@@ -8,8 +8,15 @@ def _ensure_data_dir() -> None:
     os.makedirs("data", exist_ok=True)
 
 
+# Prevent repeated prisma generate/push within a single process
+_SCHEMA_READY = False
+
+
 async def _maybe_generate_client() -> None:
     """Attempt to generate Prisma client if it doesn't exist or isn't generated."""
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
     need_generate = False
     try:
         from prisma import Prisma  # triggers getattr on missing client
@@ -25,20 +32,34 @@ async def _maybe_generate_client() -> None:
         return
     # Try to run `python -m prisma generate`
     try:
-        import subprocess, sys
+        import subprocess, sys, os
         print("[prisma] Generating client...")
-        subprocess.run([sys.executable, "-m", "prisma", "generate"], check=True)
+        env = os.environ.copy()
+        # Prepend venv bin to PATH if present
+        vbin = os.path.abspath(os.path.join(sys.prefix, 'bin'))
+        env['PATH'] = f"{vbin}:{env.get('PATH','')}"
+        env['PRISMA_PY_GENERATOR'] = os.path.join(vbin, 'prisma-client-py')
+        subprocess.run([os.path.join(vbin, "prisma"), "generate"], check=True, env=env)
     except Exception as e:
         print(f"[prisma] generate failed or prisma not installed: {e}")
 
 
 async def _maybe_push_db() -> None:
+    global _SCHEMA_READY
+    if _SCHEMA_READY:
+        return
     try:
-        import subprocess, sys
+        import subprocess, sys, os
         print("[prisma] Pushing schema (db push)...")
-        subprocess.run([sys.executable, "-m", "prisma", "db", "push"], check=True)
+        env = os.environ.copy()
+        vbin = os.path.abspath(os.path.join(sys.prefix, 'bin'))
+        env['PATH'] = f"{vbin}:{env.get('PATH','')}"
+        env['PRISMA_PY_GENERATOR'] = os.path.join(vbin, 'prisma-client-py')
+        subprocess.run([os.path.join(vbin, "prisma"), "db", "push"], check=True, env=env)
     except Exception as e:
         print(f"[prisma] db push failed: {e}")
+    else:
+        _SCHEMA_READY = True
 
 
 async def connect_client():
@@ -132,8 +153,15 @@ async def list_active_channel_ids(client, guild_id: int | None = None) -> list[i
     where = {"isActive": True}
     if guild_id is not None:
         where = {"AND": [where, {"guildId": int(guild_id)}]}
-    rows = await client.channel.find_many(where=where, select={"id": True})
+    rows = await client.channel.find_many(where=where)
     return [int(r.id) for r in rows]
+
+
+async def list_inactive_channels(client, guild_id: int | None = None):
+    where = {"isActive": False}
+    if guild_id is not None:
+        where = {"AND": [where, {"guildId": int(guild_id)}]}
+    return await client.channel.find_many(where=where, order={"name": "asc"})
 
 
 async def ensure_schema():
