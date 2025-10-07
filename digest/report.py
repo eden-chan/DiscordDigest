@@ -7,7 +7,7 @@ from .publish import post_text
 from .config import Config
 from .fetch import fetch_recent_messages, SimpleMessage
 from .scoring import select_top
-from .summarize import summarize_with_gemini, naive_extract
+from .summarize import summarize_with_gemini, naive_extract, summarize_with_gemini_citations
 
 
 async def print_report(hours: int = 72, verbose: bool = False) -> None:
@@ -175,6 +175,24 @@ def build_inline_citation_summary(
     return lines
 
 
+def build_citations_only(messages: Iterable[SimpleMessage]) -> List[str]:
+    """Build only the numbered citations block for the given messages."""
+    items: List[SimpleMessage] = list(messages)
+    if not items:
+        return []
+    lines: List[str] = ["", "Citations:"]
+    for i, m in enumerate(items, start=1):
+        meta: List[str] = []
+        if m.reactions_total:
+            meta.append(f"❤ {m.reactions_total}")
+        if m.attachments:
+            meta.append(f"📎 {m.attachments}")
+        metas = (" "+" ".join(meta)) if meta else ""
+        link = m.link or ""
+        lines.append(f"[{i}] {link}{metas}")
+    return lines
+
+
 async def build_compact_summary(hours: int = 168, max_lists: int = 5) -> list[str]:
     """Build a compact, postable weekly summary from SQLite data.
 
@@ -308,3 +326,50 @@ async def post_channel_summary(channel_id: int, hours: int = 72) -> None:
         summary_strategy="citations",
         post_to="digest",
     )
+
+
+async def build_global_citation_summary(hours: int = 168, top_n: int = 5) -> list[str]:
+    """Build a concise global summary using Gemini bullets + numbered citations."""
+    await ensure_schema()
+    client = await connect_client()
+    try:
+        now = dt.datetime.now(dt.timezone.utc)
+        since = now - dt.timedelta(hours=hours)
+        # Pull recent content-bearing messages
+        rows = await client.message.find_many(
+            where={"createdAt": {"gte": since}, "content": {"not": None}},
+            order={"createdAt": "desc"},
+        )
+        if not rows:
+            return [f"Weekly Highlights — last {hours//24}d", "No recent messages found."]
+        msgs: list[SimpleMessage] = []
+        for m in rows:
+            msgs.append(
+                SimpleMessage(
+                    id=int(m.id),
+                    channel_id=int(m.channelId),
+                    author_id=int(m.authorId),
+                    created_at=m.createdAt,
+                    content=m.content or "",
+                    link=m.link or "",
+                    reactions_total=int(m.reactionsTotal) if m.reactionsTotal is not None else 0,
+                    attachments=int(m.attachmentsCount) if m.attachmentsCount is not None else 0,
+                )
+            )
+        top = select_top(msgs, top_n, now=now, window_start=since)
+        cfg = Config.from_env()
+        title = f"Weekly Highlights — last {hours//24}d"
+        if cfg.gemini_api_key:
+            bullets = await summarize_with_gemini_citations(cfg.gemini_api_key, top, max_bullets=top_n, max_chars=600)
+            lines = [f"**{title}**"] + bullets + build_citations_only(top)
+        else:
+            lines = build_inline_citation_summary(top, title=title, max_bullets=top_n)
+        return lines
+    finally:
+        await client.disconnect()
+
+
+async def post_global_citation_summary(hours: int = 168, top_n: int = 5) -> None:
+    cfg = Config.from_env()
+    lines = await build_global_citation_summary(hours=hours, top_n=top_n)
+    await post_text(cfg.token, cfg.digest_channel_id, lines, token_type=cfg.token_type)

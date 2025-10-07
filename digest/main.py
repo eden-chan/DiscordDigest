@@ -147,6 +147,7 @@ def main() -> None:
     parser.add_argument("--max", type=int, help="Max messages per channel in full mode")
     parser.add_argument("--since", help="ISO timestamp cutoff for full mode (e.g., 2024-01-01T00:00:00Z)")
     parser.add_argument("--post-weekly", action="store_true", help="Post a compact weekly summary to the configured digest channel")
+    parser.add_argument("--post-weekly-global-citations", action="store_true", help="Post a global weekly highlights summary (Gemini bullets + citations)")
     parser.add_argument("--post-weekly-per-channel", action="store_true", help="Post weekly summaries per channel (rollup by default)")
     parser.add_argument("--skip-report", action="store_true", help="List channels marked inactive (e.g., due to 403)")
     parser.add_argument("--sync-threads", action="store_true", help="Discover and upsert thread channels for the guild")
@@ -161,12 +162,14 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Print digest to stdout without posting")
     parser.add_argument("--hours", type=int, help="Override lookback window in hours")
     parser.add_argument("--post-to", choices=["digest", "source"], default="digest", help="Target for per-channel posts (digest/source)")
-    parser.add_argument("--summary-strategy", choices=["citations", "gemini", "naive"], help="Summary style for per-channel outputs")
+    parser.add_argument("--summary-strategy", choices=["citations", "gemini", "naive", "gemini_citations"], help="Summary style for per-channel outputs")
     parser.add_argument("--min-messages", type=int, default=1, help="Minimum messages per channel to include")
     parser.add_argument("--top-n", type=int, default=5, help="Top messages per channel to cite/summarize")
     parser.add_argument("--max-channels", type=int, help="Maximum number of channels to include")
     parser.add_argument("--no-links", action="store_true", help="Omit message link list in per-channel summary")
     parser.add_argument("--citations", action="store_true", help="Use inline-citation summary bullets for per-channel output")
+    parser.add_argument("--only-text", action="store_true", help="Restrict indexing to GUILD_TEXT channels only (exclude threads/news)")
+    parser.add_argument("--show-state", action="store_true", help="Show per-channel indexing checkpoints from SQLite")
     parser.add_argument("--thread", action="store_true", help="Create a thread in the digest channel and post the rollup there (Bot token required)")
     parser.add_argument("--thread-name", help="Custom thread name for --thread (default: 'Weekly Digest — <days>d')")
     parser.add_argument("--oauth-exchange", action="store_true", help="Exchange OAUTH_CODE for tokens using env vars")
@@ -290,6 +293,46 @@ def main() -> None:
         asyncio.run(run_list_channels(live=args.live))
         return
 
+    if args.show_state:
+        async def _do_state() -> None:
+            from .db import ensure_schema, connect_client
+            await ensure_schema()
+            client = await connect_client()
+            try:
+                cfg = Config.from_env()
+                # Determine set of channels to show
+                chan_ids = None
+                if args.channels:
+                    try:
+                        chan_ids = [int(x.strip()) for x in args.channels.split(",") if x.strip()]
+                    except Exception:
+                        chan_ids = None
+                where = {}
+                if chan_ids:
+                    where["id"] = {"in": chan_ids}
+                elif cfg.guild_id:
+                    where["guildId"] = int(cfg.guild_id)
+                rows = await client.channel.find_many(where=where or None)
+                if not rows:
+                    print("No channels found in SQLite.")
+                    return
+                print("Channel indexing checkpoints:")
+                for ch in sorted(rows, key=lambda r: int(r.id)):
+                    st = await client.channelstate.find_unique(where={"channelId": int(ch.id)})
+                    # Oldest/newest in DB for this channel
+                    oldest = await client.message.find_first(where={"channelId": int(ch.id)}, order={"createdAt": "asc"})
+                    newest = await client.message.find_first(where={"channelId": int(ch.id)}, order={"createdAt": "desc"})
+                    print(
+                        f"- {ch.name or ch.id} [{ch.type}] — {int(ch.id)}\n"
+                        f"    lastIndexedAt={getattr(st,'lastIndexedAt',None)} lastMsgAt={getattr(st,'lastMessageCreatedAt',None)}\n"
+                        f"    backfillBeforeId={getattr(st,'backfillBeforeId',None)} backfillOldestAt={getattr(st,'backfillOldestAt',None)}\n"
+                        f"    db_range=({getattr(oldest,'createdAt',None)} .. {getattr(newest,'createdAt',None)})"
+                    )
+            finally:
+                await client.disconnect()
+        asyncio.run(_do_state())
+        return
+
     if args.sync_channels:
         # Live fetch required
         cfg = Config.from_env()
@@ -356,6 +399,8 @@ def main() -> None:
                     since_dt = _dt.datetime.fromisoformat(s)
                 except Exception:
                     since_dt = None
+            # Restrict to text-only if requested
+            types = {"GUILD_TEXT"} if args.only_text else None
             per = await index_messages(
                 hours=args.hours,
                 channel_ids=chans,
@@ -363,6 +408,7 @@ def main() -> None:
                 full=args.full,
                 max_total=args.max,
                 since_dt=since_dt,
+                allowed_types=types,
             )
             total = sum(per.values())
             if args.verbose:
@@ -386,6 +432,15 @@ def main() -> None:
             hours = args.hours or 168
             await post_compact_summary(hours=hours)
         asyncio.run(_do_post())
+        return
+
+    if args.post_weekly_global_citations:
+        async def _do_post_global() -> None:
+            from .report import post_global_citation_summary
+            hours = args.hours or 168
+            top_n = args.top_n if hasattr(args, 'top_n') and args.top_n else 5
+            await post_global_citation_summary(hours=hours, top_n=top_n)
+        asyncio.run(_do_post_global())
         return
 
     if args.post_weekly_per_channel:

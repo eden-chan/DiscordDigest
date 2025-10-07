@@ -6,8 +6,8 @@ from .config import Config
 from .db import ensure_schema, connect_client
 from .fetch import SimpleMessage
 from .scoring import select_top
-from .summarize import summarize_with_gemini, naive_extract
-from .report import build_inline_citation_summary
+from .summarize import summarize_with_gemini, naive_extract, summarize_with_gemini_citations
+from .report import build_inline_citation_summary, build_citations_only
 from .publish import post_text, post_one, create_thread
 
 
@@ -73,7 +73,7 @@ async def build_per_channel_summaries(
     max_channels: Optional[int] = None,
     sort_by: str = "activity",
     include_links: bool = True,
-    summary_strategy: Literal["citations", "gemini", "naive"] = "citations",
+    summary_strategy: Literal["citations", "gemini", "naive", "gemini_citations"] = "citations",
     verbose: bool = False,
 ) -> List[Tuple[int, str, List[str]]]:
     """Build per-channel summary lines for recent activity.
@@ -110,10 +110,17 @@ async def build_per_channel_summaries(
                 if not summary or summary.strip() in {"(No summary returned.)"} or summary.lower().startswith("gemini error"):
                     summary = naive_extract(top)
                 lines = [f"**{title}**", summary]
+            elif summary_strategy == "gemini_citations":
+                if cfg.gemini_api_key:
+                    bullets = await summarize_with_gemini_citations(cfg.gemini_api_key, top, max_bullets=top_n)
+                    lines = [f"**{title}**"] + bullets + build_citations_only(top)
+                else:
+                    # Fallback to deterministic citations
+                    lines = build_inline_citation_summary(top, title=title, max_bullets=top_n)
             else:
                 summary = naive_extract(top)
                 lines = [f"**{title}**", summary]
-            if include_links and summary_strategy != "citations":
+            if include_links and summary_strategy not in {"citations", "gemini_citations"}:
                 # Add top message links as bullets
                 links_added = 0
                 for m in top:
@@ -147,7 +154,7 @@ async def print_per_channel_preview(
     max_channels: Optional[int] = None,
     sort_by: str = "activity",
     include_links: bool = True,
-    summary_strategy: Literal["citations", "gemini", "naive"] = "citations",
+    summary_strategy: Literal["citations", "gemini", "naive", "gemini_citations"] = "citations",
     verbose: bool = False,
 ) -> None:
     results = await build_per_channel_summaries(
@@ -180,7 +187,7 @@ async def post_per_channel_summaries(
     max_channels: Optional[int] = None,
     sort_by: str = "activity",
     include_links: bool = True,
-    summary_strategy: Literal["citations", "gemini", "naive"] = "citations",
+    summary_strategy: Literal["citations", "gemini", "naive", "gemini_citations"] = "citations",
     post_to: str = "digest",  # 'digest' or 'source'
     rate_limit_sleep: float = 0.5,
     verbose: bool = False,

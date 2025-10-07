@@ -53,6 +53,7 @@ help:
 	@echo "  dry-run          - Run digest dry-run (HOURS=$(HOURS))"
 	@echo "  index            - Index messages to SQLite (HOURS=$(HOURS))"
 	@echo "  report           - Print a channel/user activity report (HOURS=$(HOURS))"
+	@echo "  state            - Show per-channel indexing checkpoints from SQLite"
 	@echo "  oauth-login      - Start local OAuth login server and store token to SQLite"
 	@echo "  oauth-exchange   - Exchange a code (CODE=...) and store token to SQLite"
 	@echo "  oauth-refresh    - Refresh token from env/SQLite and store to SQLite"
@@ -61,6 +62,8 @@ help:
 	@echo "  backfill-all     - Full backfill for all active channels (optional: MAX, SINCE, VERBOSE=1)"
 	@echo "  backfill-progress- Tail the deterministic NDJSON progress log"
 	@echo "  backfill-all-watch- Run backfill-all and live-tail progress log"
+	@echo "  backfill-one       - Backfill a single channel (CHANNEL=...)"
+	@echo "  backfill-one-watch - Backfill one channel with live-tail (CHANNEL=...)"
 	@echo "  digest           - One-shot: sync -> index -> report (HOURS=$(HOURS))"
 	@echo "  digest-weekly    - One-shot: sync -> index(last 7d) -> post compact summary"
 	@echo "  per-channel-preview - Preview per-channel weekly summaries (HOURS=$(HOURS), CHANNELS=$(CHANNELS))"
@@ -73,6 +76,7 @@ help:
 	@echo "  weekly-per-channel-source  - Post (7d) per-channel summaries to source channels"
 	@echo "  weekly-per-channel-preview-citations - Preview (7d) per-channel with inline citations"
 	@echo "  weekly-per-channel-digest-citations  - Post (7d) per-channel with inline citations to digest"
+	@echo "  weekly-global-citations   - Post global highlights (Gemini bullets + citations)"
 	@echo "  sync-threads     - Discover and upsert thread channels (optional: CHANNELS parent ids, VERBOSE=1)"
 	@echo "  threads          - List discovered thread channels from SQLite"
 	@echo "  threads-report   - Print a threads-only report (HOURS=$(HOURS))"
@@ -81,6 +85,9 @@ help:
 	@echo "  post-test        - Post a test message to the digest channel (TEXT=...)"
 	@echo "  post-summary     - Post a summary of a single channel (CHANNEL=..., HOURS=$(HOURS))"
 	@echo "  studio           - Open Prisma Studio (requires Node npx)"
+	@echo "  gist-db          - Upload data/digest.db to a GitHub Gist (GITHUB_TOKEN required)"
+	@echo "  hf-init          - Initialize local HF dataset git repo (.hf-dataset) (HF_REPO=acct/name)"
+	@echo "  hf-push-db       - Copy data/digest.db into .hf-dataset and push to HF (HF_REPO=acct/name)"
 	@echo "  kill-5555        - Kill any process listening on localhost:5555"
 	@echo "  kill-port        - Kill any process listening on PORT (default 5555), usage: make kill-port PORT=3000"
 	@echo "  skip-report      - List channels marked inactive (skipped due to access/type)"
@@ -118,6 +125,9 @@ index:
 report:
 	$(PY) -m digest --report --hours $(HOURS) $(REPORT_OPTS)
 
+state:
+	$(PY) -m digest --show-state $(INDEX_OPTS)
+
 backfill:
 	@if [ -z "$(CHANNELS)" ]; then echo "Provide CHANNELS=comma-separated ids for backfill"; exit 1; fi
 	$(PY) -m digest --index-messages --full --channels $(CHANNELS) $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS)
@@ -127,22 +137,33 @@ backfill-all:
 	$(PY) -m digest --sync-threads $(INDEX_OPTS)
 	$(PY) -m digest --index-messages --full $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS)
 
+backfill-one:
+	@if [ -z "$(CHANNEL)" ]; then echo "Provide CHANNEL=<channel_id>"; exit 1; fi
+	$(PY) -m digest --index-messages --full --channels $(CHANNEL) $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS)
+
 backfill-progress:
-	@LP="data/backfill_progress.log"; \
-	  echo "Tailing $$LP (Ctrl-C to stop)..."; \
+	@echo "Tailing data/backfill_progress.log (Ctrl-C to stop)..."; \
 	  mkdir -p data; \
-	  touch "$$LP"; \
-	  tail -n 200 -f "$$LP"
+	  touch data/backfill_progress.log; \
+	  tail -n 200 -f data/backfill_progress.log
 
 backfill-all-watch:
-	@LP="data/backfill_progress.log"; \
-	  echo "Running backfill-all with progress at $$LP"; \
-	  # Ensure log exists before starting background indexer
+	@echo "Running backfill-all with progress at data/backfill_progress.log"; \
 	  mkdir -p data; \
-	  touch "$$LP"; \
+	  touch data/backfill_progress.log; \
 	  $(PY) -m digest --sync-threads $(INDEX_OPTS); \
-	  ( PROGRESS_LOG_PATH="$$LP" $(PY) -m digest --index-messages --full $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS) ) & BF_PID=$$!; \
-	  tail -n 200 -f "$$LP" & TAIL_PID=$$!; \
+	  ( PROGRESS_LOG_PATH=data/backfill_progress.log $(PY) -m digest --index-messages --full $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS) ) & BF_PID=$$!; \
+	  tail -n 200 -f data/backfill_progress.log & TAIL_PID=$$!; \
+	  wait $$BF_PID || true; \
+	  kill $$TAIL_PID >/dev/null 2>&1 || true
+
+backfill-one-watch:
+	@if [ -z "$(CHANNEL)" ]; then echo "Provide CHANNEL=<channel_id>"; exit 1; fi; \
+	  echo "Running backfill-one ($(CHANNEL)) with progress at data/backfill_progress.log"; \
+	  mkdir -p data; \
+	  touch data/backfill_progress.log; \
+	  ( PROGRESS_LOG_PATH=data/backfill_progress.log $(PY) -m digest --index-messages --full --channels $(CHANNEL) $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS) ) & BF_PID=$$!; \
+	  tail -n 200 -f data/backfill_progress.log & TAIL_PID=$$!; \
 	  wait $$BF_PID || true; \
 	  kill $$TAIL_PID >/dev/null 2>&1 || true
 
@@ -193,6 +214,9 @@ weekly-per-channel-preview-citations:
 weekly-per-channel-digest-citations:
 	$(PY) -m digest --post-weekly-per-channel --hours 168 --post-to digest --citations
 
+weekly-global-citations:
+	$(PY) -m digest --post-weekly-global-citations --hours $(HOURS) $(if $(TOP_N),--top-n $(TOP_N),)
+
 thread-test:
 	$(PY) -m digest --post-thread-test
 
@@ -237,7 +261,21 @@ studio:
 		echo "Python Prisma CLI typically doesn't support studio. Install Node and try: npx prisma studio --port $(PORT)"; exit 1; \
 	else \
 		echo "No Prisma Studio available. Install Node and run: npx prisma studio --port $(PORT)"; exit 1; \
-	fi
+		fi
+
+hf-init:
+	@if [ -z "$(HF_REPO)" ]; then echo "Set HF_REPO=account/dataset"; exit 1; fi
+	@if ! command -v git >/dev/null 2>&1; then echo "git is required"; exit 1; fi
+	@if ! git lfs version >/dev/null 2>&1; then echo "git-lfs is required. Install from https://git-lfs.com and run: git lfs install"; exit 1; fi
+	@mkdir -p .hf-dataset && cd .hf-dataset && \
+	  if [ ! -d .git ]; then git init && git lfs install && echo "*.db filter=lfs diff=lfs merge=lfs -text" > .gitattributes && echo "# HF dataset $(HF_REPO)" > README.md && git add . && git commit -m init; fi && \
+	  ( git remote get-url origin >/dev/null 2>&1 || git remote add origin https://huggingface.co/datasets/$(HF_REPO) ) && \
+	  git checkout -B $(if $(HF_BRANCH),$(HF_BRANCH),main)
+
+hf-push-db:
+	@if [ -z "$(HF_REPO)" ]; then echo "Set HF_REPO=account/dataset"; exit 1; fi
+	@if [ ! -f prisma/data/digest.db ]; then echo "prisma/data/digest.db not found. Run: make index"; exit 1; fi
+	HF_REPO=$(HF_REPO) HF_BRANCH=$(if $(HF_BRANCH),$(HF_BRANCH),main) DB_PATH=prisma/data/digest.db WORKDIR=.hf-dataset MSG="$(if $(MSG),$(MSG),update: upload SQLite)" bash scripts/hf_dataset_push.sh
 
 PORT ?= 5555
 kill-port:
@@ -247,7 +285,7 @@ kill-5555:
 	@bash scripts/kill_port.sh 5555
 
 clean:
-	rm -rf .venv data/digest.db
+	rm -rf .venv prisma/data/digest.db
 
 skip-report:
 	$(PY) -m digest --skip-report

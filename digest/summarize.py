@@ -1,7 +1,7 @@
 import asyncio
 import re
 from textwrap import shorten
-from typing import Iterable, Optional
+from typing import Iterable, Optional, List
 
 from .fetch import SimpleMessage
 
@@ -64,6 +64,102 @@ async def summarize_with_gemini(
     out: str = await loop.run_in_executor(None, _run_sync)
     # Discord content limit safety
     return shorten(out, width=1800, placeholder="…")
+
+
+async def summarize_with_gemini_citations(
+    api_key: str,
+    messages: Iterable[SimpleMessage],
+    *,
+    max_bullets: int = 5,
+    max_chars: int = 800,
+) -> List[str]:
+    """Generate concise bullets that reference [n] citations based on message order.
+
+    Returns a list of bullet lines (e.g., "- Shipped X and planned Y [1]").
+    Does not include the "Citations:" section; compose that separately.
+    """
+    try:
+        import google.generativeai as genai
+    except Exception:
+        # Fallback: naive short bullets
+        outs: List[str] = []
+        count = 0
+        for m in messages:
+            if not m.content:
+                continue
+            snippet = shorten(m.content.strip().replace("\n", " "), 100)
+            count += 1
+            outs.append(f"- {snippet} [{count}]")
+            if count >= max_bullets:
+                break
+        return outs
+
+    # Prepare an indexed corpus to enforce [n] mapping
+    indexed: List[SimpleMessage] = [m for m in messages]
+    # Only keep first max_bullets for mapping; LLM should reference [1..N]
+    indexed = indexed[: max(1, max_bullets)]
+    corpus_lines: List[str] = []
+    for i, m in enumerate(indexed, start=1):
+        content = (m.content or "").strip().replace("\n", " ")
+        if not content:
+            content = m.link or ""
+        corpus_lines.append(f"[{i}] {content}")
+    corpus = "\n".join(corpus_lines) if corpus_lines else "(No content)"
+
+    prompt = (
+        "You are a staff-level editor. Draft a compact, readable summary"\
+        " using one-line bullets that reference the numbered sources.\n"\
+        "Rules:\n"\
+        f"- Use at most {max_bullets} bullets.\n"\
+        "- Each bullet ≤ 16 words.\n"\
+        "- End each bullet with a bracketed citation like [1] or [2].\n"\
+        "- No intro or outro text; only bullets.\n"\
+        "- Avoid redundancy; prefer decisions, outcomes, next steps.\n"\
+        "Sources (map):\n" + corpus
+    )
+
+    def _run_sync() -> str:
+        genai.configure(api_key=api_key)
+        model_name = (
+            os.getenv("GEMINI_MODEL")
+            or "gemini-1.5-flash-latest"
+        )
+        try:
+            model = genai.GenerativeModel(model_name)
+            resp = model.generate_content(prompt)
+            text = getattr(resp, "text", "").strip()
+            return text
+        except Exception:
+            return ""
+
+    import os
+    loop = asyncio.get_running_loop()
+    out: str = await loop.run_in_executor(None, _run_sync)
+    if not out:
+        # fallback to naive bullets
+        outs: List[str] = []
+        count = 0
+        for m in indexed:
+            if not m.content:
+                continue
+            snippet = shorten(m.content.strip().replace("\n", " "), 100)
+            count += 1
+            outs.append(f"- {snippet} [{count}]")
+            if count >= max_bullets:
+                break
+        return outs
+    # Keep within a tight budget and split into lines
+    out = shorten(out, width=max_chars, placeholder="…")
+    lines = [ln.strip() for ln in out.splitlines() if ln.strip()]
+    # Ensure bullets are prefixed correctly
+    norm: List[str] = []
+    for ln in lines:
+        s = ln
+        if not s.startswith("- "):
+            s = "- " + s.lstrip("- ")
+        norm.append(s)
+    # Cap to max_bullets
+    return norm[: max_bullets]
 
 
 def naive_extract(messages: Iterable[SimpleMessage]) -> str:

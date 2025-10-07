@@ -37,6 +37,7 @@ Toggles:
 - `--max-channels` and `--channels` to control scope.
 - `--post-to digest|source` to choose the target.
 - `--citations` to use inline-citation bullets with a numbered citations list.
+- `--summary-strategy gemini_citations` to generate concise bullets with Gemini while keeping deterministic numbered citations.
 
 ## Compact Weekly Template (Whole Server)
 Used by `python -m digest --post-weekly`.
@@ -52,7 +53,7 @@ Structure:
 2. Select top `N` messages per channel (`TOP_N_CONVOS` or CLI override).
 3. Summarize:
    - Deterministic: `build_inline_citation_summary(top)` composes bullets with `[n]` citations and a numbered link list.
-   - If `GEMINI_API_KEY` is set, you can instead call Gemini with a compact system prompt.
+   - LLM (concise with citations): `--summary-strategy gemini_citations` uses Gemini to draft 3–5 one‑line bullets ending in `[n]` that map to the numbered citations list.
    - Fallback: naive extraction of top message snippets with links.
 4. Compose lines and post via `publish.post_text` with safe chunking (~1800 chars).
 

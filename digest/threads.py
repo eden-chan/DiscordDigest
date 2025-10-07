@@ -166,6 +166,55 @@ async def sync_threads(
                             before = oldest_ts.isoformat()
                         else:
                             break
+                # Private archived threads (if the bot is a member)
+                for pid in parents:
+                    before = None
+                    while True:
+                        params = {"before": before} if before else {}
+                        r = await hc.get(f"/channels/{pid}/users/@me/threads/archived/private", params=params)
+                        if r.status_code == 403:
+                            if verbose:
+                                print(f"[threads] private archived forbidden for parent {pid}")
+                            break
+                        if r.status_code != 200:
+                            if verbose:
+                                print(f"[threads] archived(private) failed parent {pid} code={r.status_code}")
+                            break
+                        data = r.json()
+                        threads = data.get("threads", [])
+                        if not threads:
+                            break
+                        oldest_ts = None
+                        for raw in threads:
+                            try:
+                                th = type("_T", (), {})()
+                                th.id = int(raw["id"]) if "id" in raw else None
+                                th.name = raw.get("name")
+                                th.parent_id = int(raw["parent_id"]) if raw.get("parent_id") else None
+                                th.guild_id = int(raw["guild_id"]) if raw.get("guild_id") else guild_id
+                                tname = raw.get("type")
+                                th.type = type("_E", (), {"name": str(tname)})()
+                                await _upsert_thread_channel(client, thread=th)
+                                count += 1
+                                if verbose:
+                                    print(f"[threads] upsert archived(private): {th.name or th.id} ({int(th.id)}) parent={th.parent_id}")
+                                meta = raw.get("thread_metadata") or {}
+                                ats = meta.get("archive_timestamp")
+                                if ats:
+                                    try:
+                                        ts = dt.datetime.fromisoformat(ats.replace("Z", "+00:00"))
+                                        if oldest_ts is None or ts < oldest_ts:
+                                            oldest_ts = ts
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                continue
+                        if not data.get("has_more"):
+                            break
+                        if oldest_ts is not None:
+                            before = oldest_ts.isoformat()
+                        else:
+                            break
         except Exception:
             if verbose:
                 print("[threads] raw HTTP archived threads fetch failed.")

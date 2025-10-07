@@ -143,5 +143,8 @@ cython_debug/
 # SQLITE database
 *.db
 
+# Local HF dataset working repo
+.hf-dataset/
+
 # Log file
 discord.log

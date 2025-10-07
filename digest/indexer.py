@@ -143,6 +143,7 @@ async def index_messages(
     full: bool = False,
     max_total: Optional[int] = None,
     since_dt: Optional[dt.datetime] = None,
+    allowed_types: Optional[set[str]] = None,
 ) -> Dict[int, int]:
     cfg = Config.from_env()
     await ensure_schema()
@@ -172,8 +173,8 @@ async def index_messages(
         # Build channel name map for logging and filter to textable types
         rows = await client.channel.find_many(where={"id": {"in": ids}})
         name_map: Dict[int, str] = {int(ch.id): (ch.name or f"{ch.id}") for ch in rows}
-        # Only textable channels for now (include threads)
-        textable = {"GUILD_TEXT", "GUILD_NEWS", "GUILD_PUBLIC_THREAD", "GUILD_PRIVATE_THREAD", "GUILD_NEWS_THREAD", "10", "11", "12"}
+        # Only textable channels for now. Default includes threads + news; can be restricted via allowed_types.
+        textable = allowed_types or {"GUILD_TEXT", "GUILD_NEWS", "GUILD_PUBLIC_THREAD", "GUILD_PRIVATE_THREAD", "GUILD_NEWS_THREAD", "10", "11", "12"}
         if rows:
             before_filter = set(ids)
             ids = [int(ch.id) for ch in rows if (ch.type or "").upper() in textable]
