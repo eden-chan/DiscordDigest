@@ -64,6 +64,8 @@ help:
 	@echo "  backfill-all-watch- Run backfill-all and live-tail progress log"
 	@echo "  backfill-one       - Backfill a single channel (CHANNEL=...)"
 	@echo "  backfill-one-watch - Backfill one channel with live-tail (CHANNEL=...)"
+	@echo "  backfill-text      - Backfill only GUILD_TEXT channels"
+	@echo "  backfill-text-watch- Backfill only GUILD_TEXT channels with live-tail"
 	@echo "  digest           - One-shot: sync -> index -> report (HOURS=$(HOURS))"
 	@echo "  digest-weekly    - One-shot: sync -> index(last 7d) -> post compact summary"
 	@echo "  per-channel-preview - Preview per-channel weekly summaries (HOURS=$(HOURS), CHANNELS=$(CHANNELS))"
@@ -137,6 +139,10 @@ backfill-all:
 	$(PY) -m digest --sync-threads $(INDEX_OPTS)
 	$(PY) -m digest --index-messages --full $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS)
 
+backfill-text:
+	# Backfill only GUILD_TEXT channels
+	$(PY) -m digest --index-messages --full --only-text $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS)
+
 backfill-one:
 	@if [ -z "$(CHANNEL)" ]; then echo "Provide CHANNEL=<channel_id>"; exit 1; fi
 	$(PY) -m digest --index-messages --full --channels $(CHANNEL) $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS)
@@ -163,6 +169,15 @@ backfill-one-watch:
 	  mkdir -p data; \
 	  touch data/backfill_progress.log; \
 	  ( PROGRESS_LOG_PATH=data/backfill_progress.log $(PY) -m digest --index-messages --full --channels $(CHANNEL) $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS) ) & BF_PID=$$!; \
+	  tail -n 200 -f data/backfill_progress.log & TAIL_PID=$$!; \
+	  wait $$BF_PID || true; \
+	  kill $$TAIL_PID >/dev/null 2>&1 || true
+
+backfill-text-watch:
+	@echo "Running backfill-text (GUILD_TEXT only) with progress at data/backfill_progress.log"; \
+	  mkdir -p data; \
+	  touch data/backfill_progress.log; \
+	  ( PROGRESS_LOG_PATH=data/backfill_progress.log $(PY) -m digest --index-messages --full --only-text $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS) ) & BF_PID=$$!; \
 	  tail -n 200 -f data/backfill_progress.log & TAIL_PID=$$!; \
 	  wait $$BF_PID || true; \
 	  kill $$TAIL_PID >/dev/null 2>&1 || true

@@ -407,6 +407,26 @@ async def _backfill_channel(
                                 }
                             )
                             break
+                        if hasattr(hikari.errors, "NotFoundError") and isinstance(e, hikari.errors.NotFoundError):
+                            # Channel not found; mark inactive so we don't retry next runs
+                            await client.channel.update(where={"id": int(channel_id)}, data={"isActive": False})
+                            _append_progress(
+                                {
+                                    "mode": "backfill",
+                                    "status": "skip_404",
+                                    "guild_id": int(getattr(ch_row, "guildId", 0)) if ch_row else None,
+                                    "channel_id": int(channel_id),
+                                    "channel_name": getattr(ch_row, "name", None) if ch_row else None,
+                                    "type": getattr(ch_row, "type", None) if ch_row else None,
+                                    "parent_id": int(getattr(ch_row, "parentId", 0)) if ch_row and getattr(ch_row, "parentId", None) else None,
+                                    "batch_size": 0,
+                                    "total_so_far": int(count),
+                                    "oldest_seen_iso": None,
+                                    "before_id": int(before_id) if before_id else None,
+                                    "message": "NotFound (404): marked inactive",
+                                }
+                            )
+                            break
                         # Handle 429 rate limiting with retry
                         if hasattr(hikari.errors, "RateLimitedError") and isinstance(e, hikari.errors.RateLimitedError):
                             ra = getattr(e, "retry_after", None)
