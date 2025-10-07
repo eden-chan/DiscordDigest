@@ -4,6 +4,7 @@ from typing import Iterable
 import hikari
 import httpx
 from typing import Optional
+from .chunk import chunk_lines
 
 
 async def post_text(
@@ -18,15 +19,9 @@ async def post_text(
     await rest_app.start()
     try:
         async with rest_app.acquire(token, token_type=token_type) as rest:
-            buf = ""
-            for line in lines:
-                if len(buf) + len(line) + 1 > block_size:
-                    await rest.create_message(channel_id, buf)
-                    await asyncio.sleep(0)
-                    buf = ""
-                buf += ("\n" if buf else "") + line
-            if buf:
-                await rest.create_message(channel_id, buf)
+            for block in chunk_lines(lines, max_chars=block_size):
+                await rest.create_message(channel_id, block)
+                await asyncio.sleep(0)
     finally:
         await rest_app.close()
 

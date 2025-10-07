@@ -17,6 +17,8 @@ Core rules:
   - `print_report()`, `build_compact_summary()`, and `post_compact_summary()` use only DB.
 - `digest/per_channel.py` — Per-channel summary builder/preview/post using only DB messages.
 - `digest/publish.py` — Posting helper that chunks text safely to Discord.
+  - Uses `digest/chunk.py` (content-agnostic) to split messages under platform limits.
+  - The chunker never mutates content beyond splitting; it doesn't trim or add adornments.
 - `digest/main.py` — CLI wiring:
   - `--sync-*` and `--index-*` commands do reads from Discord to populate SQLite.
   - `--report`, `--post-weekly`, `--post-weekly-per-channel`, `--threads-report`, etc. read only from SQLite.

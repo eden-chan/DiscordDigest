@@ -2,6 +2,8 @@ import asyncio
 import datetime as dt
 from dataclasses import dataclass
 from typing import Iterable, List, Sequence, Optional
+import re
+from urllib.parse import urlparse
 
 import hikari
 import os
@@ -21,6 +23,14 @@ class SimpleMessage:
     attachments: int = 0
     attachments_info: Optional[List[dict]] = None
     reactions_info: Optional[List[dict]] = None
+    # Enrichment (additive)
+    mentions_user_ids: Optional[List[int]] = None
+    reply_to_id: Optional[int] = None
+    has_link: Optional[bool] = None
+    link_domains: Optional[str] = None
+    word_count: Optional[int] = None
+    has_code_block: Optional[bool] = None
+    is_question: Optional[bool] = None
 
 
 async def fetch_recent_messages(
@@ -134,6 +144,13 @@ async def fetch_recent_messages(
                                     attachments=attachments,
                                     attachments_info=attachments_info or None,
                                     reactions_info=reactions_info or None,
+                                    mentions_user_ids=_extract_user_mentions(m, content),
+                                    reply_to_id=_extract_reply_to_id(m),
+                                    has_link=_has_link(content),
+                                    link_domains=_link_domains(content),
+                                    word_count=_word_count(content),
+                                    has_code_block=_has_code_block(content),
+                                    is_question=_is_question(content),
                                 )
                             )
                             break
@@ -167,3 +184,107 @@ async def fetch_recent_messages(
     # Process oldest -> newest for stable, resumable indexing
     out.sort(key=lambda m: m.created_at)
     return out
+
+
+# --- Enrichment helpers -------------------------------------------------------
+
+_USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
+_LINK_RE = re.compile(r"https?://[^\s)]+", re.IGNORECASE)
+
+
+def _extract_user_mentions(m, content: str) -> Optional[List[int]]:
+    ids: List[int] = []
+    try:
+        maybe = getattr(m, "mentions", None) or getattr(m, "user_mentions", None)
+        if maybe:
+            for u in list(maybe):
+                try:
+                    uid = int(getattr(u, "id", 0))
+                    if uid:
+                        ids.append(uid)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    try:
+        for g in _USER_MENTION_RE.findall(content or ""):
+            try:
+                ids.append(int(g))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return list(dict.fromkeys(ids)) or None
+
+
+def _extract_reply_to_id(m) -> Optional[int]:
+    try:
+        ref = getattr(m, "message_reference", None)
+        if ref and getattr(ref, "message_id", None):
+            return int(ref.message_id)
+    except Exception:
+        pass
+    try:
+        refm = getattr(m, "referenced_message", None)
+        if refm and getattr(refm, "id", None):
+            return int(refm.id)
+    except Exception:
+        pass
+    return None
+
+
+def _has_link(content: str) -> Optional[bool]:
+    try:
+        return bool(_LINK_RE.search(content or ""))
+    except Exception:
+        return None
+
+
+def _link_domains(content: str) -> Optional[str]:
+    try:
+        urls = _LINK_RE.findall(content or "")
+        if not urls:
+            return None
+        domains: List[str] = []
+        for u in urls:
+            try:
+                d = urlparse(u).netloc.lower()
+                if d:
+                    domains.append(d)
+            except Exception:
+                continue
+        if not domains:
+            return None
+        uniq = list(dict.fromkeys(domains))
+        return ",".join(uniq)
+    except Exception:
+        return None
+
+
+def _word_count(content: str) -> Optional[int]:
+    try:
+        txt = (content or "").strip()
+        if not txt:
+            return 0
+        return len([w for w in re.split(r"\s+", txt) if w])
+    except Exception:
+        return None
+
+
+def _has_code_block(content: str) -> Optional[bool]:
+    try:
+        return "```" in (content or "")
+    except Exception:
+        return None
+
+
+def _is_question(content: str) -> Optional[bool]:
+    try:
+        txt = (content or "").strip()
+        if not txt:
+            return False
+        if txt.endswith("?"):
+            return True
+        return ("?" in txt) and (len(txt.split()) >= 3)
+    except Exception:
+        return None

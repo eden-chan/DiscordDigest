@@ -80,6 +80,13 @@ model Message {
   link             String?
   reactionsTotal   Int?
   attachmentsCount Int?
+  // Additive enrichment fields
+  replyToId        BigInt?
+  hasLink          Boolean?
+  linkDomains      String?
+  wordCount        Int?
+  hasCodeBlock     Boolean?
+  isQuestion       Boolean?
   createdAtDb      DateTime @default(now())
   updatedAtDb      DateTime @updatedAt
 

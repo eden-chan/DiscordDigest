@@ -5,6 +5,8 @@ import os
 from pathlib import Path
 from typing import Iterable, List, Optional, Dict
 import uuid
+import re
+from urllib.parse import urlparse
 
 from .config import Config
 from .fetch import fetch_recent_messages, SimpleMessage
@@ -68,6 +70,109 @@ def _append_progress(event: Dict) -> None:
         pass
 
 
+# --- Enrichment helpers (local copies) ---------------------------------------
+_USER_MENTION_RE = re.compile(r"<@!?(\d+)>")
+_LINK_RE = re.compile(r"https?://[^\s)]+", re.IGNORECASE)
+
+
+def _extract_user_mentions_from_raw(m, content: str) -> Optional[List[int]]:
+    ids: List[int] = []
+    try:
+        maybe = getattr(m, "mentions", None) or getattr(m, "user_mentions", None)
+        if maybe:
+            for u in list(maybe):
+                try:
+                    uid = int(getattr(u, "id", 0))
+                    if uid:
+                        ids.append(uid)
+                except Exception:
+                    continue
+    except Exception:
+        pass
+    try:
+        for g in _USER_MENTION_RE.findall(content or ""):
+            try:
+                ids.append(int(g))
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return list(dict.fromkeys(ids)) or None
+
+
+def _extract_reply_to_id_from_raw(m) -> Optional[int]:
+    try:
+        ref = getattr(m, "message_reference", None)
+        if ref and getattr(ref, "message_id", None):
+            return int(ref.message_id)
+    except Exception:
+        pass
+    try:
+        refm = getattr(m, "referenced_message", None)
+        if refm and getattr(refm, "id", None):
+            return int(refm.id)
+    except Exception:
+        pass
+    return None
+
+
+def _has_link(content: str) -> Optional[bool]:
+    try:
+        return bool(_LINK_RE.search(content or ""))
+    except Exception:
+        return None
+
+
+def _link_domains(content: str) -> Optional[str]:
+    try:
+        urls = _LINK_RE.findall(content or "")
+        if not urls:
+            return None
+        domains: List[str] = []
+        for u in urls:
+            try:
+                d = urlparse(u).netloc.lower()
+                if d:
+                    domains.append(d)
+            except Exception:
+                continue
+        if not domains:
+            return None
+        uniq = list(dict.fromkeys(domains))
+        return ",".join(uniq)
+    except Exception:
+        return None
+
+
+def _word_count(content: str) -> Optional[int]:
+    try:
+        txt = (content or "").strip()
+        if not txt:
+            return 0
+        return len([w for w in re.split(r"\s+", txt) if w])
+    except Exception:
+        return None
+
+
+def _has_code_block(content: str) -> Optional[bool]:
+    try:
+        return "```" in (content or "")
+    except Exception:
+        return None
+
+
+def _is_question(content: str) -> Optional[bool]:
+    try:
+        txt = (content or "").strip()
+        if not txt:
+            return False
+        if txt.endswith("?"):
+            return True
+        return ("?" in txt) and (len(txt.split()) >= 3)
+    except Exception:
+        return None
+
+
 async def _upsert_user(client, *, user_id: int, username: str | None, is_bot: bool | None) -> None:
     await client.user.upsert(
         where={"id": int(user_id)},
@@ -92,11 +197,23 @@ async def _upsert_message(client, m: SimpleMessage, guild_id: int | None) -> Non
                 "link": m.link,
                 "reactionsTotal": int(m.reactions_total) if m.reactions_total is not None else None,
                 "attachmentsCount": int(m.attachments) if m.attachments is not None else None,
+                "replyToId": int(m.reply_to_id) if getattr(m, "reply_to_id", None) else None,
+                "hasLink": bool(m.has_link) if getattr(m, "has_link", None) is not None else None,
+                "linkDomains": getattr(m, "link_domains", None),
+                "wordCount": int(m.word_count) if getattr(m, "word_count", None) is not None else None,
+                "hasCodeBlock": bool(m.has_code_block) if getattr(m, "has_code_block", None) is not None else None,
+                "isQuestion": bool(m.is_question) if getattr(m, "is_question", None) is not None else None,
             },
             "update": {
                 "content": m.content or None,
                 "reactionsTotal": int(m.reactions_total) if m.reactions_total is not None else None,
                 "attachmentsCount": int(m.attachments) if m.attachments is not None else None,
+                "replyToId": int(m.reply_to_id) if getattr(m, "reply_to_id", None) else None,
+                "hasLink": bool(m.has_link) if getattr(m, "has_link", None) is not None else None,
+                "linkDomains": getattr(m, "link_domains", None),
+                "wordCount": int(m.word_count) if getattr(m, "word_count", None) is not None else None,
+                "hasCodeBlock": bool(m.has_code_block) if getattr(m, "has_code_block", None) is not None else None,
+                "isQuestion": bool(m.is_question) if getattr(m, "is_question", None) is not None else None,
             },
         },
     )
@@ -130,6 +247,20 @@ async def _upsert_message(client, m: SimpleMessage, guild_id: int | None) -> Non
                         "emojiId": int(rx["emoji_id"]) if rx.get("emoji_id") is not None else None,
                         "emojiName": rx.get("emoji_name"),
                         "count": int(rx["count"]) if rx.get("count") is not None else None,
+                    }
+                )
+    except Exception:
+        pass
+
+    # Replace mentions with latest set (user mentions only)
+    try:
+        await client.messagemention.delete_many(where={"messageId": int(m.id)})
+        if getattr(m, "mentions_user_ids", None):
+            for uid in list(dict.fromkeys([int(x) for x in (m.mentions_user_ids or [])])):
+                await client.messagemention.create(
+                    data={
+                        "messageId": int(m.id),
+                        "userId": int(uid),
                     }
                 )
     except Exception:
@@ -560,6 +691,13 @@ async def _backfill_channel(
                         attachments=attachments,
                         attachments_info=attachments_info or None,
                         reactions_info=reactions_info or None,
+                        mentions_user_ids=_extract_user_mentions_from_raw(m, content),
+                        reply_to_id=_extract_reply_to_id_from_raw(m),
+                        has_link=_has_link(content),
+                        link_domains=_link_domains(content),
+                        word_count=_word_count(content),
+                        has_code_block=_has_code_block(content),
+                        is_question=_is_question(content),
                     )
                     await _upsert_user(client, user_id=sm.author_id, username=sm.author_username, is_bot=sm.author_is_bot)
                     await _upsert_message(client, sm, None)
