@@ -23,7 +23,6 @@ class DigestTUI(App):
         ("r", "refresh", "Refresh channels"),
         ("d", "dry_run", "Dry run digest"),
         ("h", "hours", "Cycle lookback hours"),
-        ("e", "export", "Export selected channels JSON"),
         ("q", "app.quit", "Quit"),
     ]
 
@@ -113,8 +112,7 @@ class DigestTUI(App):
     def action_dry_run(self) -> None:
         asyncio.create_task(self._do_dry_run())
 
-    def action_export(self) -> None:
-        asyncio.create_task(self._do_export())
+    # Export to JSON has been removed; DB is the source of truth.
 
     async def _do_dry_run(self) -> None:
         log = self.query_one(Log)
@@ -160,58 +158,7 @@ class DigestTUI(App):
         for line in summary.splitlines():
             log.write_line(line)
 
-    async def _do_export(self) -> None:
-        log = self.query_one(Log)
-        sel = self.query_one(SelectionList)
-        selected = self._get_selected_ids(sel)
-
-        if not selected:
-            log.write_line("No channels selected to export.")
-            return
-        if not self.cfg:
-            log.write_line("Config not loaded.")
-            return
-
-        # Resolve labels for nicer JSON and DB names
-        labels = await self._resolve_channel_labels(selected)
-
-        # 1) Persist to SQLite (source of truth)
-        try:
-            if not self.cfg.guild_id:
-                raise RuntimeError("GUILD_ID not set")
-            await ensure_schema()
-            client = await connect_client()
-            try:
-                from digest.db import upsert_guild, upsert_channels
-
-                await upsert_guild(client, int(self.cfg.guild_id))
-                items = [
-                    (int(cid), (label[1:].split(" — ")[0] if label.startswith("#") else None), None, None, None, None, None, 1)
-                    for cid, label in labels
-                ]
-                await upsert_channels(client, int(self.cfg.guild_id), items)
-                log.write_line(f"Upserted {len(items)} channels into SQLite.")
-            finally:
-                await client.disconnect()
-        except Exception as e:
-            log.write_line(f"DB upsert failed: {e}")
-
-        # 2) Also write a local JSON for convenience
-        try:
-            os.makedirs("data", exist_ok=True)
-            data = {
-                "guild_id": self.cfg.guild_id,
-                "exported": len(labels),
-                "channels": [
-                    {"id": cid, "label": label} for cid, label in labels
-                ],
-            }
-            with open("data/selected_channels.json", "w", encoding="utf-8") as f:
-                import json
-                json.dump(data, f, ensure_ascii=False, indent=2)
-            log.write_line("Exported selection to data/selected_channels.json")
-        except Exception as e:
-            log.write_line(f"JSON export failed: {e}")
+    # _do_export was removed.
 
     async def _resolve_channel_labels(self, ids: list[int]) -> list[tuple[int, str]]:
         # Import here to avoid top-level dependency during docs or tooling.

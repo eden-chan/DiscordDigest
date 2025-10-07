@@ -8,7 +8,7 @@ from .fetch import SimpleMessage
 from .scoring import select_top
 from .summarize import summarize_with_gemini, naive_extract
 from .report import build_inline_citation_summary
-from .publish import post_text, post_one
+from .publish import post_text, post_one, create_thread
 
 
 TextableTypes = {
@@ -209,28 +209,18 @@ async def post_per_channel_summaries(
     return posted
 
 
-def _compose_rollup_text(results: List[Tuple[int, str, List[str]]], max_chars: int = 1800) -> str:
-    """Flatten per-channel sections into a single message under max_chars.
+def _flatten_rollup_lines(results: List[Tuple[int, str, List[str]]]) -> List[str]:
+    """Flatten per-channel sections into a single list of lines.
 
-    Truncates gracefully with an ellipsis if necessary.
+    A blank line is inserted between channel blocks. Use publish.post_text to
+    chunk into multiple messages under the platform's character limits.
     """
-    out_lines: List[str] = []
-    total = 0
+    out: List[str] = []
     for idx, (_cid, _name, lines) in enumerate(results):
         if idx > 0:
-            # blank line between channels
-            if total + 1 > max_chars:
-                break
-            out_lines.append("")
-            total += 1
-        for ln in lines:
-            need = len(ln) + (1 if out_lines else 0)
-            if total + need > max_chars:
-                out_lines.append("…")
-                return "\n".join(out_lines)
-            out_lines.append(ln)
-            total += need
-    return "\n".join(out_lines)
+            out.append("")
+        out.extend(lines)
+    return out
 
 
 async def post_per_channel_rollup(
@@ -242,8 +232,9 @@ async def post_per_channel_rollup(
     max_channels: Optional[int] = None,
     sort_by: str = "activity",
     summary_strategy: Literal["citations", "gemini", "naive"] = "citations",
-    max_chars: int = 1800,
     verbose: bool = False,
+    thread_name: Optional[str] = None,
+    create_in_thread: bool = False,
 ) -> int:
     """Build per-channel summaries and post as ONE message (rollup)."""
     cfg = Config.from_env()
@@ -260,6 +251,22 @@ async def post_per_channel_rollup(
     )
     if not results:
         return 0
-    content = _compose_rollup_text(results, max_chars=max_chars)
-    await post_one(cfg.token, cfg.digest_channel_id, content, token_type=cfg.token_type)
+    all_lines = _flatten_rollup_lines(results)
+    if create_in_thread:
+        # Only Bot tokens can create threads reliably
+        if str(cfg.token_type).lower() == "bot":
+            tname = thread_name or f"Weekly Digest — {hours//24}d"
+            tid = await create_thread(
+                cfg.token,
+                cfg.digest_channel_id,
+                name=tname,
+                token_type=cfg.token_type,
+                auto_archive_duration=10080,
+                thread_type="GUILD_PUBLIC_THREAD",
+            )
+            if tid:
+                await post_text(cfg.token, int(tid), all_lines, token_type=cfg.token_type)
+                return 1
+        # Fallback to digest channel if thread creation failed
+    await post_text(cfg.token, cfg.digest_channel_id, all_lines, token_type=cfg.token_type)
     return 1

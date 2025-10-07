@@ -68,5 +68,5 @@ Structure:
 
 ## Configuration Tips
 - `TIME_WINDOW_HOURS=168` for a weekly default window.
-- `INCLUDE_CHANNEL_IDS` to narrow scope; or use `--channels` at runtime.
+- Use `--channels` at runtime to narrow scope (no .env allowlists).
 - Ensure `DISCORD_TOKEN_TYPE=Bot` and `GUILD_ID` are set for indexing/sync.

@@ -78,29 +78,17 @@ async def refresh_from_env() -> Dict[str, Any]:
     rtok = os.getenv("OAUTH_REFRESH_TOKEN")
 
     if not rtok:
-        # Try token cache path first
-        path = os.getenv("OAUTH_TOKEN_PATH", os.path.join("data", "oauth_token.json"))
+        # Fallback to SQLite token store
         try:
-            if os.path.exists(path):
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                rtok = data.get("refresh_token")
-        except Exception:
-            rtok = None
-    if not rtok:
-        # Fallback: read from data/channels.json (top-level refresh_token)
-        try:
-            ch_path = os.path.join("data", "channels.json")
-            if os.path.exists(ch_path):
-                with open(ch_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                if isinstance(data, dict):
-                    rtok = data.get("refresh_token")
+            from .db import get_oauth_token_sync
+            rec = get_oauth_token_sync(provider="discord", token_type="Bearer")
+            if rec is not None:
+                rtok = getattr(rec, "refreshToken", None)
         except Exception:
             rtok = None
 
     if not all([cid, secret, rtok]):
-        raise RuntimeError("Missing refresh parameters: need OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, and a refresh_token (env or data/oauth_token.json or data/channels.json)")
+        raise RuntimeError("Missing refresh parameters: need OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET, and OAUTH_REFRESH_TOKEN (env or SQLite)")
     return await refresh_access_token(cid, secret, rtok)  # type: ignore[arg-type]
 
 

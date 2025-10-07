@@ -53,6 +53,10 @@ help:
 	@echo "  dry-run          - Run digest dry-run (HOURS=$(HOURS))"
 	@echo "  index            - Index messages to SQLite (HOURS=$(HOURS))"
 	@echo "  report           - Print a channel/user activity report (HOURS=$(HOURS))"
+	@echo "  oauth-login      - Start local OAuth login server and store token to SQLite"
+	@echo "  oauth-exchange   - Exchange a code (CODE=...) and store token to SQLite"
+	@echo "  oauth-refresh    - Refresh token from env/SQLite and store to SQLite"
+	@echo "  oauth-probe      - Show current token scope/identity"
 	@echo "  backfill         - Full backfill for selected channels (CHANNELS=.. [MAX=..] [SINCE=ISO] [VERBOSE=1])"
 	@echo "  backfill-all     - Full backfill for all active channels (optional: MAX, SINCE, VERBOSE=1)"
 	@echo "  backfill-progress- Tail the deterministic NDJSON progress log"
@@ -65,6 +69,7 @@ help:
 	@echo "  digest-weekly-per-channel - One-shot: sync -> index(7d) -> post per-channel summaries"
 	@echo "  weekly-per-channel-preview - Preview (7d) per-channel summaries (no env needed)"
 	@echo "  weekly-per-channel-digest  - Post (7d) per-channel summaries to digest"
+	@echo "  weekly-per-channel-digest-thread - Post (7d) per-channel rollup in a new thread"
 	@echo "  weekly-per-channel-source  - Post (7d) per-channel summaries to source channels"
 	@echo "  weekly-per-channel-preview-citations - Preview (7d) per-channel with inline citations"
 	@echo "  weekly-per-channel-digest-citations  - Post (7d) per-channel with inline citations to digest"
@@ -75,7 +80,6 @@ help:
 	@echo "  threads-backfill-all - Backfill ALL messages for all thread channels (long)"
 	@echo "  post-test        - Post a test message to the digest channel (TEXT=...)"
 	@echo "  post-summary     - Post a summary of a single channel (CHANNEL=..., HOURS=$(HOURS))"
-	@echo "  seed-json        - Upsert channels from data/channels.json into SQLite"
 	@echo "  studio           - Open Prisma Studio (requires Node npx)"
 	@echo "  kill-5555        - Kill any process listening on localhost:5555"
 	@echo "  kill-port        - Kill any process listening on PORT (default 5555), usage: make kill-port PORT=3000"
@@ -177,6 +181,9 @@ weekly-per-channel-preview:
 weekly-per-channel-digest:
 	$(PY) -m digest --post-weekly-per-channel --hours 168 --post-to digest
 
+weekly-per-channel-digest-thread:
+	$(PY) -m digest --post-weekly-per-channel --hours 168 --post-to digest --thread --summary-strategy citations
+
 weekly-per-channel-source:
 	$(PY) -m digest --post-weekly-per-channel --hours 168 --post-to source
 
@@ -185,6 +192,9 @@ weekly-per-channel-preview-citations:
 
 weekly-per-channel-digest-citations:
 	$(PY) -m digest --post-weekly-per-channel --hours 168 --post-to digest --citations
+
+thread-test:
+	$(PY) -m digest --post-thread-test
 
 sync-threads:
 	# Uses .env via python-dotenv (no shell export needed)
@@ -217,8 +227,6 @@ post-summary:
 	@if [ -z "$(CHANNEL)" ]; then echo "Provide CHANNEL=<channel_id>"; exit 1; fi
 	$(PY) -m digest --post-summary-channel --channels $(CHANNEL) --hours $(HOURS)
 
-seed-json:
-	$(PY) -m digest --seed-channels-from-json --json-path data/channels.json
 
 studio:
 	@$(MAKE) -s kill-port PORT=$(PORT) >/dev/null 2>&1 || true
@@ -243,3 +251,14 @@ clean:
 
 skip-report:
 	$(PY) -m digest --skip-report
+oauth-login:
+	$(PY) -m digest --oauth-login $(if $(NO_BROWSER),--no-browser,) $(if $(TIMEOUT),--timeout $(TIMEOUT),)
+
+oauth-exchange:
+	$(PY) -m digest --oauth-exchange $(if $(CODE),--code "$(CODE)",)
+
+oauth-refresh:
+	$(PY) -m digest --oauth-refresh
+
+oauth-probe:
+	$(PY) -m digest --oauth-probe

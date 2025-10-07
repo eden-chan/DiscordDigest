@@ -138,7 +138,7 @@ python -m digest                   # post a preview digest
 
 ## TUI Tester (Textual)
 
-Run a simple Textual-based TUI to validate read access and summaries without posting. The TUI reads channels from SQLite by default.
+Run a simple Textual-based TUI to validate read access and summaries without posting. The TUI reads channels from SQLite only.
 
 ```
 python -m pip install -r requirements.txt
@@ -154,29 +154,6 @@ Keys:
 - `d` dry-run: fetch, score, and summarize; prints results in the right pane
 - `q` quit
 
-Exporting selections
-- Press `e` to export selected channels:
-  - Upserts the selection into SQLite for the configured `GUILD_ID`.
-  - Also writes a helper file at `data/selected_channels.json`.
-
-Seed DB from JSON
-```
-python -m digest --seed-channels-from-json --json-path data/channels.json   # uses guild_id from JSON or --guild
-```
-
-## Export Channels to JSON (optional)
-
-Scrape available channels (via Hikari REST) and write them to a JSON file. You can seed the database from this if desired, but the TUI/CLI prefer SQLite.
-
-```
-python -m digest.scrape --out data/channels.json
-```
-
-Notes:
-- With `DISCORD_TOKEN_TYPE=Bot` and `GUILD_ID` set, this exports all guild channels with names/types.
-- Bearer tokens may not list all channels due to permissions; prefer a Bot token or use a pre-generated `data/channels.json`.
-- Do not commit `data/channels.json` or `data/oauth_token.json`. Use `data/channels.example.json` as a template and keep real files local.
-
 ### OAuth Helper (optional)
 
 If you authorize with `messages.read` and need a Bearer token, you can exchange or refresh via env-driven helpers:
@@ -187,14 +164,13 @@ If you authorize with `messages.read` and need a Bearer token, you can exchange 
 # Optionally OAUTH_CODE (otherwise you will be prompted)
 # or OAUTH_REFRESH_TOKEN (for refresh)
 
-python -m digest --oauth-login --out data/oauth_token.json      # spins up local server, opens browser, captures code
+python -m digest --oauth-login      # spins up local server, opens browser, captures code
 # or
-python -m digest --oauth-exchange --out data/oauth_token.json   # prompts for code if not set
+python -m digest --oauth-exchange   # prompts for code if not set
 # or
-python -m digest --oauth-refresh --out data/oauth_token.json
+python -m digest --oauth-refresh
 
-# You can then set TOKEN (or OAUTH_ACCESS_TOKEN) from the output.
-# Tokens are also saved to SQLite automatically for centralized storage.
+# Tokens are saved to SQLite automatically for centralized storage.
 # Probe the current token and scope:
 python -m digest --oauth-probe
 ```

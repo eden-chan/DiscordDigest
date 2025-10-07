@@ -21,105 +21,6 @@ from .oauth import (
 from .discover import list_guild_channels
 
 
-def _parse_static_channel_ids(data: object) -> list[int]:
-    """Parse channel IDs from common JSON shapes.
-
-    Accepts:
-    - {"channels": [{"id": ...}, ...]}
-    - {"items": [{"id": ...}, ...]}
-    - {"data": {"channels": [...]}}
-    - Top-level list of channel dicts
-    """
-    def norm_id(v):
-        try:
-            return int(v)
-        except Exception:
-            return None
-
-    arr = None
-    if isinstance(data, list):
-        arr = data
-    elif isinstance(data, dict):
-        for key in ("channels", "items"):
-            maybe = data.get(key)
-            if isinstance(maybe, list):
-                arr = maybe
-                break
-        if arr is None and isinstance(data.get("data"), dict):
-            inner = data.get("data")
-            maybe = inner.get("channels") if isinstance(inner, dict) else None
-            if isinstance(maybe, list):
-                arr = maybe
-        if arr is None and isinstance(data.get("guild"), dict):
-            inner = data.get("guild")
-            maybe = inner.get("channels") if isinstance(inner, dict) else None
-            if isinstance(maybe, list):
-                arr = maybe
-    if not isinstance(arr, list):
-        return []
-    ids: list[int] = []
-    for ch in arr:
-        if not isinstance(ch, dict):
-            continue
-        cid = ch.get("id") or ch.get("channel_id") or ch.get("channelId")
-        cid = norm_id(cid)
-        if cid is not None:
-            ids.append(cid)
-    return ids
-
-
-def _parse_static_channels_with_labels(data: object) -> list[tuple[int, str]]:
-    """Parse (id, label) pairs from common JSON shapes.
-
-    Accepts:
-    - {"channels": [{"id": ..., "label": ..., "name": ...}, ...]}
-    - {"items": [...]}
-    - {"data": {"channels": [...]}}
-    - Top-level list of channel dicts
-    """
-    def norm_id(v):
-        try:
-            return int(v)
-        except Exception:
-            return None
-
-    arr = None
-    if isinstance(data, list):
-        arr = data
-    elif isinstance(data, dict):
-        for key in ("channels", "items"):
-            maybe = data.get(key)
-            if isinstance(maybe, list):
-                arr = maybe
-                break
-        if arr is None and isinstance(data.get("data"), dict):
-            inner = data.get("data")
-            maybe = inner.get("channels") if isinstance(inner, dict) else None
-            if isinstance(maybe, list):
-                arr = maybe
-        if arr is None and isinstance(data.get("guild"), dict):
-            inner = data.get("guild")
-            maybe = inner.get("channels") if isinstance(inner, dict) else None
-            if isinstance(maybe, list):
-                arr = maybe
-    if not isinstance(arr, list):
-        return []
-    out: list[tuple[int, str]] = []
-    for ch in arr:
-        if not isinstance(ch, dict):
-            continue
-        cid = ch.get("id") or ch.get("channel_id") or ch.get("channelId")
-        cid = norm_id(cid)
-        if cid is None:
-            continue
-        name = ch.get("name") or ch.get("channel_name")
-        label = ch.get("label")
-        if not label:
-            label = f"#{name} — {cid}" if name else f"Channel {cid}"
-        out.append((cid, str(label)))
-    return out
-
-
 async def run_preview(dry_run: bool = False, hours: int | None = None) -> None:
     """Preview or post a cross-channel summary strictly from SQLite.
 
@@ -237,8 +138,7 @@ def main() -> None:
     parser.add_argument("--sync-channels", action="store_true", help="Upsert live channels into SQLite (Bot token)")
     parser.add_argument("--list-db-channels", action="store_true", help="List channels stored in SQLite")
     parser.add_argument("--guild", type=int, help="Override guild id for DB/list operations")
-    parser.add_argument("--seed-channels-from-json", action="store_true", help="Upsert channels from a JSON file into SQLite")
-    parser.add_argument("--json-path", default=os.path.join("data", "channels.json"), help="Path to channels JSON for --seed-channels-from-json")
+    # JSON seeding removed; use --sync-channels instead.
     parser.add_argument("--index-messages", action="store_true", help="Index recent messages from active channels into SQLite")
     parser.add_argument("--channels", help="Comma-separated channel IDs for indexing (optional)")
     parser.add_argument("--verbose", action="store_true", help="Verbose output for indexing/reporting")
@@ -247,7 +147,7 @@ def main() -> None:
     parser.add_argument("--max", type=int, help="Max messages per channel in full mode")
     parser.add_argument("--since", help="ISO timestamp cutoff for full mode (e.g., 2024-01-01T00:00:00Z)")
     parser.add_argument("--post-weekly", action="store_true", help="Post a compact weekly summary to the configured digest channel")
-    parser.add_argument("--post-weekly-per-channel", action="store_true", help="Post weekly summaries per channel")
+    parser.add_argument("--post-weekly-per-channel", action="store_true", help="Post weekly summaries per channel (rollup by default)")
     parser.add_argument("--skip-report", action="store_true", help="List channels marked inactive (e.g., due to 403)")
     parser.add_argument("--sync-threads", action="store_true", help="Discover and upsert thread channels for the guild")
     parser.add_argument("--sync-threads-archive-all", action="store_true", help="Discover and upsert archived thread channels for ALL parent channels in the guild (Bot token)")
@@ -255,6 +155,7 @@ def main() -> None:
     parser.add_argument("--threads-report", action="store_true", help="Print a threads-only report")
     parser.add_argument("--index-threads-full", action="store_true", help="Backfill ALL messages for all thread channels (can be very long)")
     parser.add_argument("--post-test", action="store_true", help="Post a test message to the digest channel")
+    parser.add_argument("--post-thread-test", action="store_true", help="Create a test thread in the digest channel and post a test message (Bot token)")
     parser.add_argument("--text", help="Text for --post-test")
     parser.add_argument("--post-summary-channel", action="store_true", help="Post a summary of a single channel to the digest channel")
     parser.add_argument("--dry-run", action="store_true", help="Print digest to stdout without posting")
@@ -266,15 +167,16 @@ def main() -> None:
     parser.add_argument("--max-channels", type=int, help="Maximum number of channels to include")
     parser.add_argument("--no-links", action="store_true", help="Omit message link list in per-channel summary")
     parser.add_argument("--citations", action="store_true", help="Use inline-citation summary bullets for per-channel output")
+    parser.add_argument("--thread", action="store_true", help="Create a thread in the digest channel and post the rollup there (Bot token required)")
+    parser.add_argument("--thread-name", help="Custom thread name for --thread (default: 'Weekly Digest — <days>d')")
     parser.add_argument("--oauth-exchange", action="store_true", help="Exchange OAUTH_CODE for tokens using env vars")
     parser.add_argument("--code", help="Authorization code for --oauth-exchange (overrides OAUTH_CODE env)")
-    parser.add_argument("--oauth-refresh", action="store_true", help="Refresh access token using env vars")
-    parser.add_argument("--out", help="Write resulting JSON to a file (with --oauth-*)")
+    parser.add_argument("--oauth-refresh", action="store_true", help="Refresh access token using env vars (env or SQLite)")
+    parser.add_argument("--out", help="Write resulting JSON to a file (optional)")
     parser.add_argument("--oauth-login", action="store_true", help="Start a local server to capture code and exchange automatically")
     parser.add_argument("--no-browser", action="store_true", help="Do not open browser automatically for --oauth-login")
     parser.add_argument("--timeout", type=int, default=300, help="Timeout in seconds for OAuth login code capture")
     parser.add_argument("--oauth-probe", action="store_true", help="Probe current token and print scopes/identity")
-    parser.add_argument("--oauth-refresh-update-channels-json", action="store_true", help="With --oauth-refresh, also update top-level tokens inside data/channels.json")
     args = parser.parse_args()
 
     if args.oauth_probe or args.oauth_login or args.oauth_exchange or args.oauth_refresh:
@@ -358,24 +260,30 @@ def main() -> None:
             with open(args.out, "w", encoding="utf-8") as f:
                 json.dump(result, f, ensure_ascii=False, indent=2)
             print(f"Wrote {args.out}")
-        # Optionally merge into data/channels.json (top-level token fields)
-        if args.oauth_refresh and args.oauth_refresh_update_channels_json:
-            try:
-                ch_path = os.path.join("data", "channels.json")
-                if os.path.exists(ch_path):
-                    with open(ch_path, "r", encoding="utf-8") as f:
-                        doc = json.load(f)
-                    if isinstance(doc, dict):
-                        doc["access_token"] = result.get("access_token", doc.get("access_token"))
-                        doc["token_type"] = result.get("token_type", doc.get("token_type"))
-                        if result.get("refresh_token"):
-                            doc["refresh_token"] = result["refresh_token"]
-                        with open(ch_path, "w", encoding="utf-8") as f:
-                            json.dump(doc, f, ensure_ascii=False, indent=2)
-                            f.write("\n")
-                        print("Updated data/channels.json with refreshed tokens.")
-            except Exception as e:
-                print(f"Warning: failed to update data/channels.json: {e}")
+        # Also persist to SQLite for central auth storage
+        try:
+            from .db import upsert_oauth_token_sync
+
+            token_type = str(result.get("token_type", "Bearer"))
+            access = str(result.get("access_token")) if result.get("access_token") else None
+            refresh = result.get("refresh_token")
+            scope = result.get("scope")
+            expires_at = None
+            exp = result.get("expires_in")
+            if isinstance(exp, (int, float)):
+                expires_at = dt.datetime.now(dt.timezone.utc) + dt.timedelta(seconds=int(exp))
+            if access:
+                upsert_oauth_token_sync(
+                    provider="discord",
+                    token_type=token_type,
+                    access_token=access,
+                    refresh_token=refresh,
+                    scope=scope,
+                    expires_at=expires_at,
+                )
+                print("Stored OAuth token in SQLite (provider=discord).")
+        except Exception as e:
+            print(f"Warning: failed to store OAuth token in SQLite: {e}")
         return
 
     if args.list_channels:
@@ -428,52 +336,7 @@ def main() -> None:
         asyncio.run(_do_list())
         return
 
-    if args.seed_channels_from_json:
-        from .db import connect_client, upsert_guild, upsert_channels, ensure_schema
-
-        # Load JSON
-        try:
-            with open(args.json_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-        except Exception as e:
-            print(f"Failed to load {args.json_path}: {e}")
-            return
-
-        # Determine guild id
-        gid = None
-        if isinstance(data, dict):
-            gid = data.get("guild_id")
-            if not gid and isinstance(data.get("guild"), dict):
-                try:
-                    gid = int(data["guild"].get("id"))
-                except Exception:
-                    gid = None
-        if not gid:
-            cfg = Config.from_env()
-            gid = args.guild or cfg.guild_id
-        if not gid:
-            print("A guild id is required (provide in JSON as guild_id or via --guild).")
-            return
-
-        # Build upsert tuples
-        pairs = _parse_static_channels_with_labels(data)
-        if not pairs:
-            ids = _parse_static_channel_ids(data)
-            pairs = [(cid, None) for cid in ids]
-        if not pairs:
-            print("No channels found in JSON.")
-            return
-        items = [(cid, (label.split(" — ")[0].lstrip("#") if label else None), None, None, None, None, None, 1) for cid, label in pairs]
-
-        asyncio.run(ensure_schema())
-        client = asyncio.run(connect_client())
-        try:
-            asyncio.run(upsert_guild(client, int(gid)))
-            asyncio.run(upsert_channels(client, int(gid), items))
-            print(f"Seeded {len(items)} channels into SQLite from {args.json_path}.")
-        finally:
-            asyncio.run(client.disconnect())
-        return
+    # JSON seeding path removed.
 
     if args.index_messages:
         async def _do_index() -> None:
@@ -565,8 +428,10 @@ def main() -> None:
                     sort_by="activity",
                     summary_strategy=strategy,
                     verbose=args.verbose,
+                    create_in_thread=args.thread,
+                    thread_name=args.thread_name,
                 )
-                print("Posted 1 rollup message to digest.")
+                print("Posted rollup to digest.")
             else:
                 posted = await post_per_channel_summaries(
                     hours=hours,
@@ -717,6 +582,31 @@ def main() -> None:
             from .report import post_test_message
             await post_test_message(text=args.text)
         asyncio.run(_do_test())
+        return
+
+    if args.post_thread_test:
+        async def _do_thread_test() -> None:
+            from .config import Config
+            from .publish import create_thread, post_one
+            cfg = Config.from_env()
+            if str(cfg.token_type).lower() != "bot":
+                print("--post-thread-test requires DISCORD_TOKEN_TYPE=Bot")
+                return
+            name = f"Digest Thread Test"
+            tid = await create_thread(
+                cfg.token,
+                cfg.digest_channel_id,
+                name=name,
+                token_type=cfg.token_type,
+                auto_archive_duration=10080,
+                thread_type="GUILD_PUBLIC_THREAD",
+            )
+            if not tid:
+                print("Failed to create thread (check permissions/channel type)")
+                return
+            await post_one(cfg.token, int(tid), "Hello from DiscordDigest thread test! 🚀", token_type=cfg.token_type)
+            print(f"Posted thread test to thread {tid} under channel {cfg.digest_channel_id}.")
+        asyncio.run(_do_thread_test())
         return
 
     if args.post_summary_channel:
