@@ -128,5 +128,7 @@ model ChannelState {
   lastMessageId          BigInt?
   lastMessageCreatedAt   DateTime?
   lastIndexedAt          DateTime?
+  backfillBeforeId       BigInt?
+  backfillOldestAt       DateTime?
   channel                Channel @relation(fields: [channelId], references: [id])
 }

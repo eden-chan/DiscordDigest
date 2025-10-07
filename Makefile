@@ -3,6 +3,10 @@ PY := .venv/bin/python
 HOURS ?= 72
 CHANNELS ?=
 VERBOSE ?=
+POST_TO ?= digest
+MIN_MESSAGES ?= 1
+MAX_CHANNELS ?=
+NO_LINKS ?=
 
 # Optional CLI flags assembled from env vars
 INDEX_OPTS :=
@@ -15,7 +19,28 @@ ifneq ($(strip $(VERBOSE)),)
   REPORT_OPTS += --verbose
 endif
 
-.PHONY: help setup prisma db-push install sync list-db list-live tui dry-run seed-json oauth-exchange oauth-refresh oauth-probe clean
+# Per-channel options
+PC_OPTS :=
+ifneq ($(strip $(CHANNELS)),)
+  PC_OPTS += --channels $(CHANNELS)
+endif
+ifneq ($(strip $(VERBOSE)),)
+  PC_OPTS += --verbose
+endif
+ifneq ($(strip $(NO_LINKS)),)
+  PC_OPTS += --no-links
+endif
+ifneq ($(strip $(MIN_MESSAGES)),)
+  PC_OPTS += --min-messages $(MIN_MESSAGES)
+endif
+ifneq ($(strip $(MAX_CHANNELS)),)
+  PC_OPTS += --max-channels $(MAX_CHANNELS)
+endif
+ifneq ($(strip $(POST_TO)),)
+  PC_OPTS += --post-to $(POST_TO)
+endif
+
+.PHONY: help setup prisma db-push install sync list-db list-live tui dry-run seed-json clean per-channel-preview per-channel-digest per-channel-source digest-weekly-per-channel
 
 help:
 	@echo "Available targets:"
@@ -30,19 +55,28 @@ help:
 	@echo "  report           - Print a channel/user activity report (HOURS=$(HOURS))"
 	@echo "  backfill         - Full backfill for selected channels (CHANNELS=.. [MAX=..] [SINCE=ISO] [VERBOSE=1])"
 	@echo "  backfill-all     - Full backfill for all active channels (optional: MAX, SINCE, VERBOSE=1)"
+	@echo "  backfill-progress- Tail the deterministic NDJSON progress log"
+	@echo "  backfill-all-watch- Run backfill-all and live-tail progress log"
 	@echo "  digest           - One-shot: sync -> index -> report (HOURS=$(HOURS))"
 	@echo "  digest-weekly    - One-shot: sync -> index(last 7d) -> post compact summary"
+	@echo "  per-channel-preview - Preview per-channel weekly summaries (HOURS=$(HOURS), CHANNELS=$(CHANNELS))"
+	@echo "  per-channel-digest  - Post per-channel summaries to digest (POST_TO=digest)"
+	@echo "  per-channel-source  - Post per-channel summaries to their source channels"
+	@echo "  digest-weekly-per-channel - One-shot: sync -> index(7d) -> post per-channel summaries"
+	@echo "  weekly-per-channel-preview - Preview (7d) per-channel summaries (no env needed)"
+	@echo "  weekly-per-channel-digest  - Post (7d) per-channel summaries to digest"
+	@echo "  weekly-per-channel-source  - Post (7d) per-channel summaries to source channels"
+	@echo "  weekly-per-channel-preview-citations - Preview (7d) per-channel with inline citations"
+	@echo "  weekly-per-channel-digest-citations  - Post (7d) per-channel with inline citations to digest"
 	@echo "  sync-threads     - Discover and upsert thread channels (optional: CHANNELS parent ids, VERBOSE=1)"
 	@echo "  threads          - List discovered thread channels from SQLite"
 	@echo "  threads-report   - Print a threads-only report (HOURS=$(HOURS))"
+	@echo "  threads-archive-all - Sync archived threads across all parents (Bot token)"
+	@echo "  threads-backfill-all - Backfill ALL messages for all thread channels (long)"
 	@echo "  post-test        - Post a test message to the digest channel (TEXT=...)"
 	@echo "  post-summary     - Post a summary of a single channel (CHANNEL=..., HOURS=$(HOURS))"
 	@echo "  seed-json        - Upsert channels from data/channels.json into SQLite"
-	@echo "  oauth-exchange   - Exchange OAUTH code and store to file+SQLite (CODE=...)"
-	@echo "  oauth-refresh    - Refresh OAuth token and store to file+SQLite"
-	@echo "  oauth-probe      - Show current token scope/identity"
 	@echo "  studio           - Open Prisma Studio (requires Node npx)"
-	@echo "  db-shell         - Open SQLite shell for data/digest.db"
 	@echo "  kill-5555        - Kill any process listening on localhost:5555"
 	@echo "  kill-port        - Kill any process listening on PORT (default 5555), usage: make kill-port PORT=3000"
 	@echo "  skip-report      - List channels marked inactive (skipped due to access/type)"
@@ -52,7 +86,7 @@ setup:
 	bash scripts/setup.sh
 
 prisma:
-	PRISMA_PY_GENERATOR="$(PWD)/.venv/bin/prisma-client-py" .venv/bin/prisma generate && PRISMA_PY_GENERATOR="$(PWD)/.venv/bin/prisma-client-py" .venv/bin/prisma db push
+	PRISMA_PY_GENERATOR="$(PWD)/.venv/bin/prisma-client-py" .venv/bin/prisma generate && PRISMA_PY_GENERATOR="$(PWD)/.venv/bin/prisma-client-py" .venv/bin/prisma db push --skip-generate
 
 install:
 	bash scripts/setup.sh
@@ -86,7 +120,27 @@ backfill:
 
 backfill-all:
 	# Uses .env via python-dotenv (no shell export needed)
+	$(PY) -m digest --sync-threads $(INDEX_OPTS)
 	$(PY) -m digest --index-messages --full $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS)
+
+backfill-progress:
+	@LP="data/backfill_progress.log"; \
+	  echo "Tailing $$LP (Ctrl-C to stop)..."; \
+	  mkdir -p data; \
+	  touch "$$LP"; \
+	  tail -n 200 -f "$$LP"
+
+backfill-all-watch:
+	@LP="data/backfill_progress.log"; \
+	  echo "Running backfill-all with progress at $$LP"; \
+	  # Ensure log exists before starting background indexer
+	  mkdir -p data; \
+	  touch "$$LP"; \
+	  $(PY) -m digest --sync-threads $(INDEX_OPTS); \
+	  ( PROGRESS_LOG_PATH="$$LP" $(PY) -m digest --index-messages --full $(if $(MAX),--max $(MAX),) $(if $(SINCE),--since $(SINCE),) $(INDEX_OPTS) ) & BF_PID=$$!; \
+	  tail -n 200 -f "$$LP" & TAIL_PID=$$!; \
+	  wait $$BF_PID || true; \
+	  kill $$TAIL_PID >/dev/null 2>&1 || true
 
 digest:
 	# One-shot daily flow: sync -> index -> report (uses .env)
@@ -99,6 +153,38 @@ digest-weekly:
 	$(PY) -m digest --sync-channels
 	$(PY) -m digest --index-messages --hours 168 $(INDEX_OPTS)
 	$(PY) -m digest --post-weekly --hours 168
+
+# Per-channel helpers
+per-channel-preview:
+	$(PY) -m digest --post-weekly-per-channel --hours $(HOURS) --dry-run $(PC_OPTS)
+
+per-channel-digest:
+	$(PY) -m digest --post-weekly-per-channel --hours $(HOURS) --post-to digest $(PC_OPTS)
+
+per-channel-source:
+	$(PY) -m digest --post-weekly-per-channel --hours $(HOURS) --post-to source $(PC_OPTS)
+
+digest-weekly-per-channel:
+	# One-shot weekly: sync -> index(7d) -> post per-channel summaries (uses .env)
+	$(PY) -m digest --sync-channels
+	$(PY) -m digest --index-messages --hours 168 $(INDEX_OPTS)
+	$(PY) -m digest --post-weekly-per-channel --hours 168 $(PC_OPTS)
+
+# Simpler weekly aliases (no env overrides required)
+weekly-per-channel-preview:
+	$(PY) -m digest --post-weekly-per-channel --hours 168 --dry-run
+
+weekly-per-channel-digest:
+	$(PY) -m digest --post-weekly-per-channel --hours 168 --post-to digest
+
+weekly-per-channel-source:
+	$(PY) -m digest --post-weekly-per-channel --hours 168 --post-to source
+
+weekly-per-channel-preview-citations:
+	$(PY) -m digest --post-weekly-per-channel --hours 168 --dry-run --citations
+
+weekly-per-channel-digest-citations:
+	$(PY) -m digest --post-weekly-per-channel --hours 168 --post-to digest --citations
 
 sync-threads:
 	# Uses .env via python-dotenv (no shell export needed)
@@ -116,6 +202,14 @@ threads:
 threads-report:
 	$(PY) -m digest --threads-report --hours $(HOURS) $(REPORT_OPTS)
 
+threads-archive-all:
+	# Discover archived threads across all parents (requires Bot token)
+	$(PY) -m digest --sync-threads-archive-all $(INDEX_OPTS)
+
+threads-backfill-all:
+	# Backfill ALL messages for all thread channels (can be very long)
+	$(PY) -m digest --index-threads-full $(INDEX_OPTS)
+
 post-test:
 	$(PY) -m digest --post-test $(if $(TEXT),--text "$(TEXT)",)
 
@@ -126,16 +220,6 @@ post-summary:
 seed-json:
 	$(PY) -m digest --seed-channels-from-json --json-path data/channels.json
 
-oauth-exchange:
-	@if [ -z "$$CODE" ]; then echo "Provide CODE=... make oauth-exchange"; exit 1; fi
-	$(PY) -m digest --oauth-exchange --code "$$CODE" --out data/oauth_token.json
-
-oauth-refresh:
-	$(PY) -m digest --oauth-refresh --out data/oauth_token.json --oauth-refresh-update-channels-json
-
-oauth-probe:
-	$(PY) -m digest --oauth-probe
-
 studio:
 	@$(MAKE) -s kill-port PORT=$(PORT) >/dev/null 2>&1 || true
 	@if command -v npx >/dev/null 2>&1; then \
@@ -145,13 +229,6 @@ studio:
 		echo "Python Prisma CLI typically doesn't support studio. Install Node and try: npx prisma studio --port $(PORT)"; exit 1; \
 	else \
 		echo "No Prisma Studio available. Install Node and run: npx prisma studio --port $(PORT)"; exit 1; \
-	fi
-
-db-shell:
-	@if command -v sqlite3 >/dev/null 2>&1; then \
-		sqlite3 data/digest.db; \
-	else \
-		echo "sqlite3 CLI not found. You can use Python: python -c 'import sqlite3;import sys;[print(r) for r in sqlite3.connect(\"data/digest.db\").execute(\".tables\")]'"; \
 	fi
 
 PORT ?= 5555

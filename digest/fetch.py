@@ -29,6 +29,9 @@ async def fetch_recent_messages(
     channel_ids: Iterable[int],
     since: dt.datetime,
     limit_per_channel: int = 200,
+    *,
+    concurrency: int = 2,
+    per_channel_sleep: float = 0.0,
 ) -> List[SimpleMessage]:
     """Fetch recent messages from the given channel IDs using Hikari REST.
 
@@ -43,17 +46,22 @@ async def fetch_recent_messages(
     out: List[SimpleMessage] = []
     try:
         async with rest_app.acquire(token, token_type=token_type) as rest:
-            sem = asyncio.Semaphore(5)
+            # Concurrency is rate-limit sensitive; default to 2 to be gentle
+            sem = asyncio.Semaphore(max(1, int(concurrency)))
 
             async def fetch_one(cid: int) -> None:
                 async with sem:
-                    try:
-                        itr = rest.fetch_messages(cid).limit(min(100, limit_per_channel))
-                        async for m in itr:
-                            # created_at is aware datetime
-                            ts = getattr(m, "created_at", None)
-                            if not ts or ts < since:
-                                continue
+                    import random
+                    from hikari import errors as _hikari_errors
+                    retries = 0
+                    while True:
+                        try:
+                            itr = rest.fetch_messages(cid).limit(min(100, limit_per_channel))
+                            async for m in itr:
+                                # created_at is aware datetime
+                                ts = getattr(m, "created_at", None)
+                                if not ts or ts < since:
+                                    continue
                             content = m.content or ""
                             msg_link = f"https://discord.com/channels/@me/{m.channel_id}/{m.id}"
                             # If in guild, prefer guild path
@@ -128,10 +136,27 @@ async def fetch_recent_messages(
                                     reactions_info=reactions_info or None,
                                 )
                             )
-                    except Exception as e:
-                        if os.getenv("DIGEST_DEBUG"):
-                            print(f"fetch_messages failed for channel {cid}: {type(e).__name__}: {e}")
-                        return
+                            break
+                        except _hikari_errors.ForbiddenError:
+                            # Missing Access: skip this channel gracefully
+                            if os.getenv("DIGEST_DEBUG"):
+                                print(f"fetch_messages forbidden for channel {cid}: 403 Missing Access")
+                            break
+                        except Exception as e:
+                            # Bound retries if the exception exposes retry_after; otherwise bail out
+                            ra = getattr(e, "retry_after", None)
+                            if ra is not None and retries < 5:
+                                try:
+                                    await asyncio.sleep(float(ra) + random.uniform(0.1, 0.5))
+                                except Exception:
+                                    await asyncio.sleep(1.0)
+                                retries += 1
+                                continue
+                            if os.getenv("DIGEST_DEBUG"):
+                                print(f"fetch_messages failed for channel {cid}: {type(e).__name__}: {e}")
+                            break
+                    if per_channel_sleep > 0:
+                        await asyncio.sleep(per_channel_sleep)
 
             tasks = [fetch_one(int(cid)) for cid in channel_ids]
             if tasks:
@@ -139,6 +164,6 @@ async def fetch_recent_messages(
     finally:
         await rest_app.close()
 
-    # Sort newest first for consistency
-    out.sort(key=lambda m: m.created_at, reverse=True)
+    # Process oldest -> newest for stable, resumable indexing
+    out.sort(key=lambda m: m.created_at)
     return out

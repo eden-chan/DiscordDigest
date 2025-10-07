@@ -91,27 +91,8 @@ class DigestTUI(App):
             except Exception as e:
                 log.write_line(f"DB load failed: {e}")
 
-            # 2) Fallback: Static file (for bootstrap/dev)
-            static_path = os.path.join("data", "channels.json")
-            if os.path.exists(static_path):
-                try:
-                    with open(static_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    parsed = self._parse_static_channels(data)
-                    if parsed:
-                        for cid, label, has_name in parsed:
-                            self._sel_add(sel, Selection(label, cid))
-                        total = len(parsed)
-                        resolved = sum(1 for _, _, ok in parsed if ok)
-                        log.write_line(
-                            f"Loaded {total} channels from data/channels.json. Resolved names: {resolved}/{total}. Press 'd' to dry-run."
-                        )
-                        return
-                except Exception as e:
-                    log.write_line(f"Failed to load data/channels.json: {e}")
-
-            # 3) Guidance
-            log.write_line("No channels found. Run `python -m digest --sync-channels` (Bot token), then press 'r'.")
+            # Guidance only (no static JSON fallback)
+            log.write_line("No channels in SQLite. Run `python -m digest --sync-channels` (Bot token), then press 'r'.")
             return
         except Exception as e:
             log.write_line(f"Error loading channels: {e}")

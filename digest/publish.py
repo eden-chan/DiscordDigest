@@ -27,3 +27,23 @@ async def post_text(
                 await rest.create_message(channel_id, buf)
     finally:
         await rest_app.close()
+
+
+async def post_one(
+    token: str,
+    channel_id: int,
+    content: str,
+    *,
+    token_type: str = "Bot",
+) -> None:
+    """Post exactly one message to a channel.
+
+    Caller must ensure `content` is below Discord limits (~2000 chars).
+    """
+    rest_app = hikari.RESTApp()
+    await rest_app.start()
+    try:
+        async with rest_app.acquire(token, token_type=token_type) as rest:
+            await rest.create_message(channel_id, content)
+    finally:
+        await rest_app.close()

@@ -35,5 +35,17 @@ Keep modules cohesive and under 300 LOC. Prefer Hikari for Discord I/O and Textu
   - Checklist: formatted with Black, imports via isort, no secrets.
 
 ## Security & Configuration Tips
-- Never commit secrets. Use `.env` (ignored by Git). Required: `TOKEN`/`DISCORD_TOKEN`, `DISCORD_TOKEN_TYPE=Bot`, `GUILD_ID`, `DIGEST_CHANNEL_ID`. Optional: `TIME_WINDOW_HOURS`, `TOP_N_CONVOS`, `GEMINI_API_KEY`.
+- Never commit secrets. Use `.env` (ignored by Git) sparingly.
+- Minimal env set (keep it small):
+  - Required: `DISCORD_TOKEN_TYPE` (`Bot` preferred), one of `TOKEN` (bot) or `OAUTH_TOKEN_PATH` (Bearer JSON path), `GUILD_ID`, `DIGEST_CHANNEL_ID`.
+  - Optional: `GEMINI_API_KEY`.
+- Do not add per-run toggles to `.env` (e.g., channel filters). Use CLI flags instead: `python -m digest --channels 123,456`.
+- Dynamic/auth data lives in SQLite or `data/*.json` (e.g., OAuth token JSON), not in `.env`.
 - Validate access with the TUI or `--dry-run` before posting to Discord.
+
+## Environment Variables Policy (Keep It Minimal)
+- Prefer sane defaults in code over new env variables.
+- Avoid introducing new `.env` keys; pass one-off behavior via CLI flags.
+- No channel allowlists in `.env` (e.g., `INCLUDE_CHANNEL_IDS`). If filtering is needed, use `--channels` at runtime.
+- Store refreshed OAuth tokens in SQLite/`data/oauth_token.json`; never in `.env`.
+- If a new setting truly needs configuration, update `.env.example` and document why it cannot be inferred.

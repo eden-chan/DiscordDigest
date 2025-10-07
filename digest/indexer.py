@@ -1,6 +1,10 @@
 import asyncio
 import datetime as dt
+import json
+import os
+from pathlib import Path
 from typing import Iterable, List, Optional, Dict
+import uuid
 
 from .config import Config
 from .fetch import fetch_recent_messages, SimpleMessage
@@ -9,6 +13,59 @@ from .db import (
     connect_client,
     list_active_channel_ids,
 )
+
+
+# --- Progress logging (deterministic NDJSON) ---------------------------------
+_RUN_ID: Optional[str] = None
+_PROGRESS_LOG_PATH: Optional[Path] = None
+
+
+def _iso(dtobj: Optional[dt.datetime]) -> Optional[str]:
+    if not dtobj:
+        return None
+    if dtobj.tzinfo is None:
+        # Treat naive as UTC
+        dtobj = dtobj.replace(tzinfo=dt.timezone.utc)
+    return dtobj.astimezone(dt.timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _get_run_id() -> str:
+    global _RUN_ID
+    if _RUN_ID:
+        return _RUN_ID
+    _RUN_ID = os.getenv("RUN_ID") or uuid.uuid4().hex
+    return _RUN_ID
+
+
+def _get_progress_path() -> Path:
+    global _PROGRESS_LOG_PATH
+    if _PROGRESS_LOG_PATH is not None:
+        return _PROGRESS_LOG_PATH
+    p = os.getenv("PROGRESS_LOG_PATH") or os.getenv("PROGRESS_LOG") or str(Path("data") / "backfill_progress.log")
+    _PROGRESS_LOG_PATH = Path(p)
+    # Ensure directory exists
+    _PROGRESS_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return _PROGRESS_LOG_PATH
+
+
+def _append_progress(event: Dict) -> None:
+    """Append a single NDJSON line with stable key ordering.
+
+    - Adds ts and run_id automatically if missing.
+    - Uses sort_keys and minimal separators for deterministic formatting.
+    """
+    try:
+        if "ts" not in event:
+            event["ts"] = _iso(dt.datetime.now(dt.timezone.utc))
+        if "run_id" not in event:
+            event["run_id"] = _get_run_id()
+        line = json.dumps(event, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+        with _get_progress_path().open("a", encoding="utf-8") as f:
+            f.write(line + "\n")
+            f.flush()
+    except Exception:
+        # Never fail indexing due to logging
+        pass
 
 
 async def _upsert_user(client, *, user_id: int, username: str | None, is_bot: bool | None) -> None:
@@ -106,6 +163,8 @@ async def index_messages(
     per_channel: Dict[int, int] = {}
     lookback = hours if hours is not None else cfg.time_window_hours
     default_since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=lookback)
+    # Deterministic processing order
+    ids = sorted(int(x) for x in ids)
 
     # Single connection for entire run to avoid repeated client setup
     client = await connect_client()
@@ -122,6 +181,10 @@ async def index_messages(
             if verbose and skipped:
                 for cid in skipped:
                     print(f"[skip] channel {cid}: non-textable type ({(name_map.get(cid) or cid)})")
+
+        # Announce log path once
+        if verbose:
+            print(f"[progress] NDJSON log → {_get_progress_path()} (run_id={_get_run_id()})")
 
         for cid in ids:
             # Load per-channel state
@@ -148,10 +211,35 @@ async def index_messages(
                         "update": {"lastIndexedAt": dt.datetime.now(dt.timezone.utc)},
                     },
                 )
+                # Log channel completion for backfill
+                try:
+                    ch = next((r for r in rows if int(r.id) == int(cid)), None)
+                    _append_progress(
+                        {
+                            "mode": "backfill",
+                            "status": "done",
+                            "guild_id": int(getattr(ch, "guildId", cfg.guild_id or 0)) if ch else (cfg.guild_id or 0),
+                            "channel_id": int(cid),
+                            "channel_name": name_map.get(int(cid), str(cid)),
+                            "type": getattr(ch, "type", None) if ch else None,
+                            "parent_id": int(getattr(ch, "parentId", 0)) if ch and getattr(ch, "parentId", None) else None,
+                            "total_so_far": int(cnt),
+                            "message": "channel backfill complete",
+                        }
+                    )
+                except Exception:
+                    pass
                 continue
             # Incremental mode
             since = state.lastMessageCreatedAt if state and state.lastMessageCreatedAt else default_since
-            msgs: List[SimpleMessage] = await fetch_recent_messages(cfg.token, cfg.token_type, [cid], since)
+            msgs: List[SimpleMessage] = await fetch_recent_messages(
+                cfg.token,
+                cfg.token_type,
+                [cid],
+                since,
+                concurrency=2,
+                per_channel_sleep=0.1,
+            )
             if not msgs:
                 # Update lastIndexedAt even if nothing new
                 await client.channelstate.upsert(
@@ -164,15 +252,38 @@ async def index_messages(
                 if verbose:
                     cname = name_map.get(int(cid), str(cid))
                     print(f"[index] {cname} ({cid}): 0 new messages since {since:%Y-%m-%d %H:%M}")
+                try:
+                    ch = next((r for r in rows if int(r.id) == int(cid)), None)
+                    _append_progress(
+                        {
+                            "mode": "incremental",
+                            "status": "ok",
+                            "guild_id": int(getattr(ch, "guildId", cfg.guild_id or 0)) if ch else (cfg.guild_id or 0),
+                            "channel_id": int(cid),
+                            "channel_name": name_map.get(int(cid), str(cid)),
+                            "type": getattr(ch, "type", None) if ch else None,
+                            "parent_id": int(getattr(ch, "parentId", 0)) if ch and getattr(ch, "parentId", None) else None,
+                            "batch_size": 0,
+                            "total_so_far": 0,
+                            "oldest_seen_iso": None,
+                            "before_id": None,
+                            "message": f"no new messages since {_iso(since)}",
+                        }
+                    )
+                except Exception:
+                    pass
                 continue
 
             # Upsert
             max_created = None
             max_id = None
+            oldest_created = None
             for m in msgs:
                 if max_created is None or m.created_at > max_created:
                     max_created = m.created_at
                     max_id = m.id
+                if oldest_created is None or m.created_at < oldest_created:
+                    oldest_created = m.created_at
                 await _upsert_user(client, user_id=m.author_id, username=m.author_username, is_bot=m.author_is_bot)
                 await _upsert_message(client, m, cfg.guild_id)
                 total += 1
@@ -180,6 +291,27 @@ async def index_messages(
             if verbose:
                 cname = name_map.get(int(cid), str(cid))
                 print(f"[index] {cname} ({cid}): +{len(msgs)} messages; last={max_created:%Y-%m-%d %H:%M}")
+            # Progress log for incremental batch
+            try:
+                ch = next((r for r in rows if int(r.id) == int(cid)), None)
+                _append_progress(
+                    {
+                        "mode": "incremental",
+                        "status": "ok",
+                        "guild_id": int(getattr(ch, "guildId", cfg.guild_id or 0)) if ch else (cfg.guild_id or 0),
+                        "channel_id": int(cid),
+                        "channel_name": name_map.get(int(cid), str(cid)),
+                        "type": getattr(ch, "type", None) if ch else None,
+                        "parent_id": int(getattr(ch, "parentId", 0)) if ch and getattr(ch, "parentId", None) else None,
+                        "batch_size": int(len(msgs)),
+                        "total_so_far": int(len(msgs)),
+                        "oldest_seen_iso": _iso(oldest_created),
+                        "before_id": None,
+                        "message": "incremental batch indexed",
+                    }
+                )
+            except Exception:
+                pass
             # Update channel state
             await client.channelstate.upsert(
                 where={"channelId": int(cid)},
@@ -223,7 +355,21 @@ async def _backfill_channel(
     rest_app = hikari.RESTApp()
     await rest_app.start()
     count = 0
+    # Resume point from ChannelState
     before_id = None
+    try:
+        state = await client.channelstate.find_unique(where={"channelId": int(channel_id)})
+        if state and getattr(state, "backfillBeforeId", None):
+            before_id = int(getattr(state, "backfillBeforeId"))
+    except Exception:
+        pass
+    # Channel metadata for logging
+    ch_row = None
+    try:
+        ch_row = await client.channel.find_unique(where={"id": int(channel_id)})
+    except Exception:
+        ch_row = None
+    retries = 0
     try:
         async with rest_app.acquire(token, token_type=token_type) as rest:
             while True:
@@ -243,11 +389,99 @@ async def _backfill_channel(
                         import hikari
                         if isinstance(e, hikari.errors.ForbiddenError):
                             await client.channel.update(where={"id": int(channel_id)}, data={"isActive": False})
+                            _append_progress(
+                                {
+                                    "mode": "backfill",
+                                    "status": "skip_403",
+                                    "guild_id": int(getattr(ch_row, "guildId", 0)) if ch_row else None,
+                                    "channel_id": int(channel_id),
+                                    "channel_name": getattr(ch_row, "name", None) if ch_row else None,
+                                    "type": getattr(ch_row, "type", None) if ch_row else None,
+                                    "parent_id": int(getattr(ch_row, "parentId", 0)) if ch_row and getattr(ch_row, "parentId", None) else None,
+                                    "batch_size": 0,
+                                    "total_so_far": int(count),
+                                    "oldest_seen_iso": None,
+                                    "before_id": int(before_id) if before_id else None,
+                                    "message": "Forbidden (403): marked inactive",
+                                }
+                            )
+                            break
+                        # Handle 429 rate limiting with retry
+                        if hasattr(hikari.errors, "RateLimitedError") and isinstance(e, hikari.errors.RateLimitedError):
+                            ra = getattr(e, "retry_after", None)
+                            retry_after = float(ra) if ra is not None else 3.0
+                            _append_progress(
+                                {
+                                    "mode": "backfill",
+                                    "status": "retry_429",
+                                    "guild_id": int(getattr(ch_row, "guildId", 0)) if ch_row else None,
+                                    "channel_id": int(channel_id),
+                                    "channel_name": getattr(ch_row, "name", None) if ch_row else None,
+                                    "type": getattr(ch_row, "type", None) if ch_row else None,
+                                    "parent_id": int(getattr(ch_row, "parentId", 0)) if ch_row and getattr(ch_row, "parentId", None) else None,
+                                    "batch_size": 0,
+                                    "total_so_far": int(count),
+                                    "oldest_seen_iso": None,
+                                    "before_id": int(before_id) if before_id else None,
+                                    "message": f"rate limited; retrying after {retry_after}s",
+                                }
+                            )
+                            await asyncio.sleep(retry_after)
+                            continue
                     except Exception:
+                        # Unknown exception class or logging failed; apply bounded backoff
                         pass
-                    break
+                    # Generic transient retry with exponential backoff (bounded)
+                    retries += 1
+                    if retries <= 5:
+                        backoff = min(60.0, 1.0 * (2 ** (retries - 1)))
+                        _append_progress(
+                            {
+                                "mode": "backfill",
+                                "status": "retry_other",
+                                "guild_id": int(getattr(ch_row, "guildId", 0)) if ch_row else None,
+                                "channel_id": int(channel_id),
+                                "channel_name": getattr(ch_row, "name", None) if ch_row else None,
+                                "type": getattr(ch_row, "type", None) if ch_row else None,
+                                "parent_id": int(getattr(ch_row, "parentId", 0)) if ch_row and getattr(ch_row, "parentId", None) else None,
+                                "batch_size": 0,
+                                "total_so_far": int(count),
+                                "oldest_seen_iso": None,
+                                "before_id": int(before_id) if before_id else None,
+                                "message": f"transient error ({type(e).__name__}); retrying after {backoff}s",
+                            }
+                        )
+                        await asyncio.sleep(backoff)
+                        continue
+                    else:
+                        _append_progress(
+                            {
+                                "mode": "backfill",
+                                "status": "error",
+                                "guild_id": int(getattr(ch_row, "guildId", 0)) if ch_row else None,
+                                "channel_id": int(channel_id),
+                                "channel_name": getattr(ch_row, "name", None) if ch_row else None,
+                                "type": getattr(ch_row, "type", None) if ch_row else None,
+                                "parent_id": int(getattr(ch_row, "parentId", 0)) if ch_row and getattr(ch_row, "parentId", None) else None,
+                                "batch_size": 0,
+                                "total_so_far": int(count),
+                                "oldest_seen_iso": None,
+                                "before_id": int(before_id) if before_id else None,
+                                "message": f"giving up after {retries} retries ({type(e).__name__})",
+                            }
+                        )
+                        break
                 if not batch:
                     break
+                # Process oldest -> newest within page for determinism
+                try:
+                    batch.sort(
+                        key=lambda x: getattr(x, "created_at", dt.datetime.fromtimestamp(0, tz=dt.timezone.utc))
+                    )
+                except Exception:
+                    pass
+                earliest = batch[0]
+                earliest_ts = getattr(earliest, "created_at", None)
                 for m in batch:
                     ts = getattr(m, "created_at", None)
                     if cutoff and ts and ts < cutoff:
@@ -311,9 +545,48 @@ async def _backfill_channel(
                     count += 1
                     if max_total is not None and count >= max_total:
                         return count
-                before_id = int(batch[-1].id)
+                # Page older: use earliest message id as the next before pointer
+                before_id = int(earliest.id)
+                try:
+                    await client.channelstate.upsert(
+                        where={"channelId": int(channel_id)},
+                        data={
+                            "create": {"channelId": int(channel_id), "backfillBeforeId": before_id, "backfillOldestAt": earliest_ts},
+                            "update": {"backfillBeforeId": before_id, "backfillOldestAt": earliest_ts},
+                        },
+                    )
+                except Exception:
+                    pass
+                # Reset transient retry counter after a successful batch
+                retries = 0
                 if verbose:
-                    print(f"[backfill] channel {channel_id}: total {count}, oldest seen {batch[-1].created_at:%Y-%m-%d %H:%M}")
+                    try:
+                        when = earliest_ts.strftime("%Y-%m-%d %H:%M") if earliest_ts else "?"
+                    except Exception:
+                        when = "?"
+                    print(f"[backfill] channel {channel_id}: total {count}, oldest seen {when}")
+                # Progress log for this batch
+                try:
+                    _append_progress(
+                        {
+                            "mode": "backfill",
+                            "status": "ok",
+                            "guild_id": int(getattr(ch_row, "guildId", 0)) if ch_row else None,
+                            "channel_id": int(channel_id),
+                            "channel_name": getattr(ch_row, "name", None) if ch_row else None,
+                            "type": getattr(ch_row, "type", None) if ch_row else None,
+                            "parent_id": int(getattr(ch_row, "parentId", 0)) if ch_row and getattr(ch_row, "parentId", None) else None,
+                            "batch_size": int(len(batch)),
+                            "total_so_far": int(count),
+                            "oldest_seen_iso": _iso(earliest_ts),
+                            "before_id": int(before_id),
+                            "message": "backfill batch indexed",
+                        }
+                    )
+                except Exception:
+                    pass
+                # Gentle pacing between pages to reduce rate limiting
+                await asyncio.sleep(0.25)
     finally:
         await rest_app.close()
     return count

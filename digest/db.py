@@ -55,7 +55,8 @@ async def _maybe_push_db() -> None:
         vbin = os.path.abspath(os.path.join(sys.prefix, 'bin'))
         env['PATH'] = f"{vbin}:{env.get('PATH','')}"
         env['PRISMA_PY_GENERATOR'] = os.path.join(vbin, 'prisma-client-py')
-        subprocess.run([os.path.join(vbin, "prisma"), "db", "push"], check=True, env=env)
+        # Avoid duplicate generation since we handle `generate` separately as needed
+        subprocess.run([os.path.join(vbin, "prisma"), "db", "push", "--skip-generate"], check=True, env=env)
     except Exception as e:
         print(f"[prisma] db push failed: {e}")
     else:
@@ -165,8 +166,14 @@ async def list_inactive_channels(client, guild_id: int | None = None):
 
 
 async def ensure_schema():
+    """Ensure Prisma client is importable. Avoid db push by default.
+
+    Schema sync (db push) is handled by `make setup` / `make prisma`.
+    To force auto-push in-process, set DIGEST_AUTO_DB_PUSH=1.
+    """
     await _maybe_generate_client()
-    await _maybe_push_db()
+    if os.getenv("DIGEST_AUTO_DB_PUSH", "").strip().lower() in {"1", "true", "yes"}:
+        await _maybe_push_db()
 
 
 # OAuth token storage

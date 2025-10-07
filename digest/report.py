@@ -1,16 +1,69 @@
 import datetime as dt
-from typing import Dict
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from .db import ensure_schema, connect_client
 from textwrap import shorten
 from .publish import post_text
 from .config import Config
-from .fetch import fetch_recent_messages
+from .fetch import fetch_recent_messages, SimpleMessage
 from .scoring import select_top
 from .summarize import summarize_with_gemini, naive_extract
 
 
 async def print_report(hours: int = 72, verbose: bool = False) -> None:
+    snap = await build_activity_snapshot(hours=hours, max_highlights=10)
+    channels = snap.get("channels", [])
+    users = snap.get("users", [])
+    if not channels and not users:
+        print(f"No messages in the last {hours}h.")
+        return
+    print(f"Report — last {hours}h")
+    if channels:
+        print("Top channels:")
+        for row in channels[:10]:
+            nm = row.get("name") or str(row.get("id"))
+            print(f"- #{nm} — {row.get('count')}")
+    if users:
+        print("Top users:")
+        for row in users[:10]:
+            nm = row.get("username") or str(row.get("id"))
+            print(f"- {nm} — {row.get('count')}")
+    if verbose:
+        highlights = snap.get("highlights", [])
+        if highlights:
+            print("\nHighlights:")
+            for m in highlights[:10]:
+                ch = m.get("channel") or str(m.get("channelId"))
+                au = m.get("author") or str(m.get("authorId"))
+                created = m.get("createdAt")
+                ts = created.strftime("%Y-%m-%d %H:%M") if created else ""
+                print(f"[{ts}] #{ch} by {au}")
+                content = m.get("content") or ""
+                if content:
+                    print(f"  {content[:180]}")
+                link = m.get("link")
+                if link:
+                    print(f"  {link}")
+
+
+async def build_activity_snapshot(
+    *,
+    hours: int = 72,
+    max_highlights: int = 5,
+) -> dict:
+    """Return a deterministic activity snapshot for the window.
+
+    Shape:
+    {
+      'since': datetime,
+      'until': datetime,
+      'channels': [{'id': int, 'name': str|None, 'count': int}],
+      'users': [{'id': int, 'username': str|None, 'count': int}],
+      'highlights': [{'id': int, 'link': str|None, 'channelId': int, 'channel': str|None,
+                      'authorId': int, 'author': str|None, 'reactions': int|None,
+                      'attachments': int|None, 'content': str|None, 'createdAt': datetime}],
+    }
+    """
     await ensure_schema()
     client = await connect_client()
     try:
@@ -21,9 +74,6 @@ async def print_report(hours: int = 72, verbose: bool = False) -> None:
             order={"createdAt": "desc"},
             include={"channel": True, "author": True},
         )
-        if not msgs:
-            print(f"No messages in the last {hours}h.")
-            return
         per_channel: Dict[int, int] = {}
         per_user: Dict[int, int] = {}
         for m in msgs:
@@ -32,26 +82,97 @@ async def print_report(hours: int = 72, verbose: bool = False) -> None:
         # Resolve names
         channels = await client.channel.find_many(where={"id": {"in": list(per_channel.keys())}})
         users = await client.user.find_many(where={"id": {"in": list(per_user.keys())}})
-        cname = {int(c.id): (c.name or str(c.id)) for c in channels}
-        uname = {int(u.id): (u.username or str(u.id)) for u in users}
+        cname = {int(c.id): (c.name or None) for c in channels}
+        uname = {int(u.id): (u.username or None) for u in users}
 
-        print(f"Report — last {hours}h")
-        print("Top channels:")
-        for cid, cnt in sorted(per_channel.items(), key=lambda kv: kv[1], reverse=True)[:10]:
-            print(f"- #{cname.get(cid, str(cid))} — {cnt}")
-        print("Top users:")
-        for uid, cnt in sorted(per_user.items(), key=lambda kv: kv[1], reverse=True)[:10]:
-            print(f"- {uname.get(uid, str(uid))} — {cnt}")
-        if verbose:
-            print("\nSample messages:")
-            for m in msgs[:10]:
-                print(f"[{m.createdAt:%Y-%m-%d %H:%M}] #{cname.get(int(m.channelId), m.channelId)} by {uname.get(int(m.authorId), m.authorId)}")
-                if m.content:
-                    print(f"  {m.content[:180]}")
-                if m.link:
-                    print(f"  {m.link}")
+        channel_list = [
+            {"id": cid, "name": cname.get(cid), "count": cnt}
+            for cid, cnt in sorted(per_channel.items(), key=lambda kv: kv[1], reverse=True)
+        ]
+        user_list = [
+            {"id": uid, "username": uname.get(uid), "count": cnt}
+            for uid, cnt in sorted(per_user.items(), key=lambda kv: kv[1], reverse=True)
+        ]
+
+        # Deterministic highlights: content-bearing messages sorted by reactions desc then recency
+        content_msgs = [m for m in msgs if m.content]
+        content_msgs.sort(key=lambda m: (m.reactionsTotal or 0, m.createdAt), reverse=True)
+        highlights = []
+        for m in content_msgs[: max(0, max_highlights)]:
+            highlights.append(
+                {
+                    "id": int(m.id),
+                    "link": m.link,
+                    "channelId": int(m.channelId),
+                    "channel": (m.channel.name if getattr(m, "channel", None) else None) or None,
+                    "authorId": int(m.authorId),
+                    "author": (m.author.username if getattr(m, "author", None) else None) or None,
+                    "reactions": m.reactionsTotal,
+                    "attachments": m.attachmentsCount,
+                    "content": m.content,
+                    "createdAt": m.createdAt,
+                }
+            )
+
+        return {
+            "since": since,
+            "until": now,
+            "channels": channel_list,
+            "users": user_list,
+            "highlights": highlights,
+        }
     finally:
         await client.disconnect()
+
+
+def build_inline_citation_summary(
+    messages: Iterable[SimpleMessage],
+    *,
+    title: Optional[str] = None,
+    max_bullets: int = 5,
+) -> List[str]:
+    """Compose a summary with inline citations from given messages.
+
+    Output format:
+    [Title]
+    - Bullet 1 [1]
+    - Bullet 2 [2]
+    ...
+    Citations:
+    [1] <link> — optional meta
+    [2] <link> — optional meta
+    """
+    # Pick top items in given order; if more than max_bullets, trim deterministically
+    items: List[SimpleMessage] = list(messages)
+    # Use most recent first within selection
+    items.sort(key=lambda m: m.created_at, reverse=True)
+    items = items[: max(0, max_bullets)]
+
+    lines: List[str] = []
+    if title:
+        lines.append(f"**{title}**")
+    # Bullets with inline [n]
+    for i, m in enumerate(items, start=1):
+        snippet = shorten((m.content or "").replace("\n", " ").strip(), width=140, placeholder="…")
+        if not snippet:
+            snippet = "(link)"
+        lines.append(f"- {snippet} [{i}]")
+
+    if not items:
+        return lines or ["(No items to summarize.)"]
+
+    lines.append("")
+    lines.append("Citations:")
+    for i, m in enumerate(items, start=1):
+        meta: List[str] = []
+        if m.reactions_total:
+            meta.append(f"❤ {m.reactions_total}")
+        if m.attachments:
+            meta.append(f"📎 {m.attachments}")
+        metas = (" "+" ".join(meta)) if meta else ""
+        link = m.link or ""
+        lines.append(f"[{i}] {link}{metas}")
+    return lines
 
 
 async def build_compact_summary(hours: int = 168, max_lists: int = 5) -> list[str]:
@@ -174,19 +295,16 @@ async def post_test_message(text: str | None = None) -> None:
 
 
 async def post_channel_summary(channel_id: int, hours: int = 72) -> None:
-    cfg = Config.from_env()
-    since = dt.datetime.now(dt.timezone.utc) - dt.timedelta(hours=hours)
-    msgs = await fetch_recent_messages(cfg.token, cfg.token_type, [channel_id], since)
-    if not msgs:
-        await post_text(cfg.token, cfg.digest_channel_id, [f"No recent messages in channel {channel_id} (last {hours}h)."], token_type=cfg.token_type)
-        return
-    top = select_top(msgs, 5, now=dt.datetime.now(dt.timezone.utc), window_start=since)
-    if cfg.gemini_api_key:
-        summary = await summarize_with_gemini(cfg.gemini_api_key, top)
-        if not summary or summary.strip() in {"(No summary returned.)"} or summary.lower().startswith("gemini error"):
-            summary = naive_extract(top)
-    else:
-        summary = naive_extract(top)
-    title = f"Channel {channel_id} — last {hours}h"
-    lines = [f"**{title}**", summary]
-    await post_text(cfg.token, cfg.digest_channel_id, lines, token_type=cfg.token_type)
+    """Post a single-channel summary strictly from SQLite data.
+
+    Uses the per-channel builder and citation-style summary for determinism.
+    """
+    from .per_channel import post_per_channel_summaries
+
+    await post_per_channel_summaries(
+        hours=hours,
+        channels=[int(channel_id)],
+        top_n=5,
+        summary_strategy="citations",
+        post_to="digest",
+    )

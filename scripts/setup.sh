@@ -53,7 +53,7 @@ fi
 
 echo "[setup] Generating Prisma client and pushing schema (SQLite)..."
 PRISMA_PY_GENERATOR="$(pwd)/.venv/bin/prisma-client-py" .venv/bin/prisma generate || true
-PRISMA_PY_GENERATOR="$(pwd)/.venv/bin/prisma-client-py" .venv/bin/prisma db push || true
+PRISMA_PY_GENERATOR="$(pwd)/.venv/bin/prisma-client-py" .venv/bin/prisma db push --skip-generate || true
 
 echo "[setup] Done. Next steps:"
 cat <<EOF
